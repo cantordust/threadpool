@@ -6,12 +6,11 @@ find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
+set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
 set(bin_name "threadpool")
-set(dlog_in_threadpool ON CACHE BOOL "Toggle dlog output in the threadpool header on/off" FORCE)
 
-if(${dlog_in_threadpool})
-	add_definitions(-DDLOG_IN_THREADPOOL)
+if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+	add_definitions(-DTP_DEBUG)
 endif()
 
 set(
