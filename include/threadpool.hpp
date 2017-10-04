@@ -135,6 +135,18 @@ namespace Async
 			}).detach();
 		}
 
+		template <class T>
+		std::reference_wrapper<T> wrap(T& val)
+		{
+			return std::ref(val);
+		}
+
+		template <class T>
+		T&&	wrap(T&& val)
+		{
+			return std::forward<T>(val);
+		}
+
 	public:
 
 		ThreadPool(const uint _pool_size = std::thread::hardware_concurrency())
@@ -167,11 +179,14 @@ namespace Async
 		}
 
 		template<typename F, typename ... Args>
-		std::future<typename std::result_of<F(Args...)>::type> enqueue(F&& _f, Args&&... _args)
+		auto enqueue(F&& _f, Args&&... _args)
 		{
-			using ret_t = typename std::result_of<F(Args...)>::type;
+			using ret_t = typename std::result_of<F& (Args&...)>::type;
 
-			auto task(std::make_shared<std::packaged_task<ret_t()>>(std::bind(std::forward<F>(_f), std::forward<Args>(_args)...)));
+			/// Using a conditional wrapper to avoid dangling references.
+			/// Courtesy of https://stackoverflow.com/a/46565491/4639195.
+			auto task(std::make_shared<std::packaged_task<ret_t()>>(std::bind(std::forward<F>(_f), wrap(std::forward<Args>(_args))...)));
+
 			std::future<ret_t> result = task->get_future();
 
 			{
@@ -235,9 +250,6 @@ namespace Async
 
 		inline void stop()
 		{
-			/// Stop the thread pool,
-			/// empty the queue and
-			/// kill all the threads
 			{
 				glock lk(mtx);
 				if (halt)
@@ -251,6 +263,8 @@ namespace Async
 
 			glock lk(mtx);
 			halt = true;
+
+			/// Empty the queue
 			while (!tasks.queue.empty())
 			{
 				tasks.queue.pop();
