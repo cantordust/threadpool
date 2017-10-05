@@ -4,12 +4,18 @@ project(threadpool)
 
 find_package(Threads REQUIRED)
 
+# Note: This CMakeLists.txt is only required
+# if you want to run the example.
+# Otherwise, you can just copy threadpool.hpp
+# into your project directory and #include it.
+
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+set(tp_debug OFF CACHE STRING "Enable debug output" FORCE)
 set(bin_name "threadpool")
 
-if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+if(${tp_debug})
 	add_definitions(-DTP_DEBUG)
 endif()
 
@@ -27,7 +33,6 @@ include_directories(
 
 set(
 	src_list
-	include/dlog.hpp
 	include/threadpool.hpp
 	src/example.cpp
 	)

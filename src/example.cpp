@@ -85,42 +85,42 @@ int main(void)
 
 	for (uint it = 1; it <= iterations; ++it)
 	{
-		dlog() << "\n************ Iteration " << it << "/" << iterations << " ************\n";
+		dp() << "\n************ Iteration " << it << "/" << iterations << " ************\n";
 
 		uint workers(std::thread::hardware_concurrency());
 		ThreadPool tp(workers);
 
 		for (uint run = 0; run < runs; ++run)
 		{
-			dlog() << "--> Scheduling " << tasks << " task(s)";
+			dp() << "--> Scheduling " << tasks << " task(s)";
 			schedule(tp, tasks);
 
 			/// Synchronise
-			dlog() << "Waiting for tasks to complete...";
+			dp() << "Waiting for tasks to complete...";
 			tp.wait();
-			dlog() << "Tasks completed!";
+			dp() << "Tasks completed!";
 
 			workers = d_workers(rng);
 
-			dlog() << "--> Resizing pool to " << workers << " worker(s)";
+			dp() << "--> Resizing pool to " << workers << " worker(s)";
 			tp.resize(workers);
 
-			dlog() << "--> Scheduling " << tasks << " task(s)";
+			dp() << "--> Scheduling " << tasks << " task(s)";
 			schedule(tp, tasks);
 
 			if (d_stop(rng) < 0.5)
 			{
 				tp.stop();
-				dlog() << "Threadpool stopped.";
+				dp() << "Threadpool stopped.";
 			}
 		}
 
-		dlog() << "--> Waiting for ThreadPool destructor...";
+		dp() << "--> Waiting for ThreadPool destructor...";
 
 	}
 
-	dlog() << "***** " << iterations << " iteration(s) completed successfully! *****";
-	dlog() << "Exiting main...";
+	dp() << "***** " << iterations << " iteration(s) completed successfully! *****";
+	dp() << "Exiting main...";
 
 	return 0;
 }

@@ -12,13 +12,36 @@
 #include <random>
 #include <mutex>
 #include <type_traits>
-#include "dlog.hpp"
 
 namespace Async
 {
 	typedef std::unique_lock<std::mutex> ulock;
 	typedef std::lock_guard<std::mutex> glock;
 	typedef unsigned int uint;
+
+	/// Mutex for outputting to std::cout
+	static std::mutex dp_mutex;
+
+	/// Rudimentary debug printer class.
+	class dp
+	{
+		std::stringstream buf;
+
+	public:
+
+		~dp()
+		{
+			glock lk(dp_mutex);
+			std::cout << buf.str() << "\n";
+		}
+
+		template<typename T>
+		dp& operator<< (const T& _t)
+		{
+			buf << _t;
+			return *this;
+		}
+	};
 
 	class ThreadPool
 	{
@@ -66,7 +89,7 @@ namespace Async
 				uint worker_id(++workers.count);
 
 #ifdef TP_DEBUG
-				dlog() << "\tWorker " << worker_id << " in thread " << std::this_thread::get_id() << " ready";
+				dp() << "\tWorker " << worker_id << " in thread " << std::this_thread::get_id() << " ready";
 #endif
 				workers.ready.notify_one();
 
@@ -96,7 +119,7 @@ namespace Async
 						tasks.queue.pop();
 						++tasks.assigned;
 #ifdef TP_DEBUG
-						dlog() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
+						dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
 #endif
 						lk.unlock();
 
@@ -107,7 +130,7 @@ namespace Async
 
 						--tasks.assigned;
 #ifdef TP_DEBUG
-						dlog() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
+						dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
 #endif
 						/// Notify all waiting threads that
 						/// we have processed all tasks.
@@ -115,7 +138,7 @@ namespace Async
 							tasks.assigned == 0)
 						{
 #ifdef TP_DEBUG
-							dlog() << "Signalling that all tasks have been processed...";
+							dp() << "Signalling that all tasks have been processed...";
 #endif
 							tasks.finished.notify_all();
 						}
@@ -130,7 +153,7 @@ namespace Async
 					kill_switch.notify_one();
 				}
 #ifdef TP_DEBUG
-				dlog() << "\tWorker in thread " << std::this_thread::get_id() << " exiting";
+				dp() << "\tWorker in thread " << std::this_thread::get_id() << " exiting";
 #endif
 			}).detach();
 		}
@@ -160,7 +183,7 @@ namespace Async
 		~ThreadPool()
 		{
 #ifdef TP_DEBUG
-			dlog() << "Notifying all threads that threadpool has reached EOL...";
+			dp() << "Notifying all threads that threadpool has reached EOL...";
 #endif
 			ulock lk(mtx);
 			halt = true;
@@ -174,7 +197,7 @@ namespace Async
 			tasks.finished.notify_all();
 
 #ifdef TP_DEBUG
-			dlog() << tasks.received << " task(s) completed successfully!";
+			dp() << tasks.received << " task(s) completed successfully!";
 #endif
 		}
 
@@ -196,14 +219,14 @@ namespace Async
 					++tasks.received;
 					tasks.queue.emplace([=]{ (*task)(); });
 #ifdef TP_DEBUG
-					dlog() << "New task received (" << tasks.received << " in total), " << tasks.queue.size() << " task(s) enqueued";
+					dp() << "New task received (" << tasks.received << " in total), " << tasks.queue.size() << " task(s) enqueued";
 #endif
 					workers.semaphore.notify_one();
 				}
 #ifdef TP_DEBUG
 				else
 				{
-					dlog() << "Threadpool stopped, not accepting new tasks.";
+					dp() << "Threadpool stopped, not accepting new tasks.";
 				}
 #endif
 			}
@@ -217,7 +240,7 @@ namespace Async
 			if (halt)
 			{
 #ifdef TP_DEBUG
-				dlog() << "Threadpool stopped, resizing not allowed.";
+				dp() << "Threadpool stopped, resizing not allowed.";
 #endif
 				return;
 			}
@@ -255,7 +278,7 @@ namespace Async
 				if (halt)
 				{
 #ifdef TP_DEBUG
-					dlog() << "Threadpool already stopped.";
+					dp() << "Threadpool already stopped.";
 #endif
 					return;
 				}
@@ -291,10 +314,16 @@ namespace Async
 			/// \todo Resume
 		}
 
-		inline uint get_queue_size()
+		inline uint queue_size()
 		{
 			glock lk(mtx);
 			return tasks.queue.size();
+		}
+
+		inline uint worker_count()
+		{
+			glock lk(mtx);
+			return workers.count;
 		}
 	};
 }
