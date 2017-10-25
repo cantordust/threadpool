@@ -291,7 +291,7 @@ namespace Async
 
 		inline void stop()
 		{
-			glock lk(mtx);
+			ulock lk(mtx);
 			if (flags.halt)
 			{
 #ifdef TP_DEBUG
@@ -310,6 +310,8 @@ namespace Async
 					++tasks.aborted;
 				}
 			}
+
+			tasks.finished.wait(lk, [&] { return (tasks.queue.empty() && tasks.assigned == 0); });
 		}
 
 		inline void wait()
