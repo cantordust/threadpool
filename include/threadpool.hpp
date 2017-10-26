@@ -136,30 +136,31 @@ namespace Async
 					if ((flags.halt && tasks.queue.empty()) ||
 						workers.count > workers.target_count)
 					{
-						--workers.count;
-						flags.prune = (workers.count > workers.target_count);
 						break;
 					}
 
-					function = std::move(tasks.queue.front());
-					tasks.queue.pop();
+					if (!tasks.queue.empty())
+					{
+						function = std::move(tasks.queue.front());
+						tasks.queue.pop();
 
-					/// Execute the task
-					++tasks.assigned;
+						/// Execute the task
+						++tasks.assigned;
 
 #ifdef TP_DEBUG
-					dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
+						dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
 #endif
 
-					lk.unlock();
-					function();
-					lk.lock();
+						lk.unlock();
+						function();
+						lk.lock();
 
-					--tasks.assigned;
-					++tasks.completed;
+						--tasks.assigned;
+						++tasks.completed;
 #ifdef TP_DEBUG
-					dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
+						dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
 #endif
+					}
 
 					/// Notify all waiting threads that
 					/// we have processed all tasks.
@@ -172,6 +173,9 @@ namespace Async
 						tasks.finished.notify_all();
 					}
 				}
+
+				--workers.count;
+				flags.prune = (workers.count > workers.target_count);
 
 				if (workers.count == 0)
 				{
@@ -291,7 +295,7 @@ namespace Async
 
 		inline void stop()
 		{
-			ulock lk(mtx);
+			glock lk(mtx);
 			if (flags.halt)
 			{
 #ifdef TP_DEBUG
@@ -311,7 +315,7 @@ namespace Async
 				}
 			}
 
-			tasks.finished.wait(lk, [&] { return (tasks.queue.empty() && tasks.assigned == 0); });
+			tasks.semaphore.notify_all();
 		}
 
 		inline void wait()
@@ -320,7 +324,7 @@ namespace Async
 			if (flags.halt)
 			{
 #ifdef TP_DEBUG
-			dp() << "Threadpool stopped, not waiting.";
+				dp() << "Threadpool stopped, not waiting.";
 #endif
 				return;
 			}
