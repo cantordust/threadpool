@@ -1,29 +1,32 @@
-#ifndef MAIN_HPP
-#define MAIN_HPP
+#ifndef THREADPOOL_HPP
+#define THREADPOOL_HPP
 
-#include <iostream>
-#include <unordered_map>
-#include <string>
-#include <sstream>
 #include <queue>
 #include <condition_variable>
 #include <future>
 #include <thread>
 #include <memory>
-#include <random>
 #include <mutex>
-#include <type_traits>
+
+#ifdef TP_DEBUG
+
+#include <iostream>
+#include <string>
+#include <sstream>
+
+#endif
 
 namespace Async
 {
-	typedef unsigned int uint;
+	using uint = unsigned int;
+	using ulock = std::unique_lock<std::mutex>;
+	using glock = std::lock_guard<std::mutex>;
 
-	typedef std::unique_lock<std::mutex> ulock;
-	typedef std::lock_guard<std::mutex> glock;
+#ifdef TP_DEBUG
 
 	/// Mutex for outputting to std::cout
-	static std::mutex dp_mutex;
 
+	static std::mutex dp_mutex;
 	/// Rudimentary debug printer class.
 	class dp
 	{
@@ -44,6 +47,7 @@ namespace Async
 			return *this;
 		}
 	};
+#endif
 
 	class ThreadPool
 	{
@@ -52,186 +56,62 @@ namespace Async
 		/// All shared data should be modified after locking this mutex
 		std::mutex mtx;
 
-		/// Kill switch indicating that it is
-		/// OK to destroy the ThreadPool object
-		std::condition_variable kill_switch;
+		/// Task queue
+		std::queue<std::function<void()>> queue;
 
-		struct Flags
+		/// Condition variable used for signalling
+		/// other threads that the processing has finished.
+		std::condition_variable finished;
+
+		std::condition_variable semaphore;
+
+		struct
 		{
-			/// Empty the queue and stop receiving new tasks.
-			bool halt;
-
-			/// Destroy some threads.
-			bool prune;
-
-			/// Pause the execution.
-			bool pause;
-
-			Flags()
-				:
-				  halt(false),
-				  prune(false),
-				  pause(false)
-			{}
+			bool stop = false;
+			bool prune = false;
+			bool pause = false;
 		} flags;
 
-		struct Tasks
+		struct
 		{
-			uint received;
-			uint assigned;
-			uint completed;
-			uint aborted;
+			uint received = 0;
+			uint assigned = 0;
+			uint completed = 0;
+			uint aborted = 0;
+		} stats;
 
-			/// Task queue
-			std::queue<std::function<void()>> queue;
-
-			/// Condition variable used for signalling
-			/// other threads that the processing has finished.
-			std::condition_variable finished;
-
-			std::condition_variable semaphore;
-
-			Tasks()
-				:
-				  received(0),
-				  assigned(0),
-				  completed(0),
-				  aborted(0)
-			{}
-		} tasks;
-
-		struct Workers
+		struct
 		{
-			uint target_count;
 			uint count;
-
-			Workers(const uint _target_count)
-				:
-				  target_count(_target_count),
-				  count(0)
-			{}
+			uint target_count;
 		} workers;
-
-		inline void add_worker()
-		{
-			std::thread([&]
-			{
-				ulock lk(mtx);
-				uint worker_id(++workers.count);
-
-#ifdef TP_DEBUG
-				dp() << "\tWorker " << worker_id << " in thread " << std::this_thread::get_id() << " ready";
-#endif
-				std::function<void()> function;
-
-				while (true)
-				{
-					/// Pause the execution.
-					tasks.semaphore.wait(lk, [&]{ return !flags.pause; });
-
-					/// Block execution until we have something to process.
-					tasks.semaphore.wait(lk, [&]{ return flags.halt || flags.prune || !tasks.queue.empty(); });
-
-					/// Break from the loop	if required
-					if ((flags.halt && tasks.queue.empty()) ||
-						workers.count > workers.target_count)
-					{
-						break;
-					}
-
-					if (!tasks.queue.empty())
-					{
-						function = std::move(tasks.queue.front());
-						tasks.queue.pop();
-
-						/// Execute the task
-						++tasks.assigned;
-
-#ifdef TP_DEBUG
-						dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
-#endif
-
-						lk.unlock();
-						function();
-						lk.lock();
-
-						--tasks.assigned;
-						++tasks.completed;
-#ifdef TP_DEBUG
-						dp() << tasks.assigned << " task(s) assigned (" << tasks.queue.size() << " enqueued)";
-#endif
-					}
-
-					/// Notify all waiting threads that
-					/// we have processed all tasks.
-					if (tasks.assigned == 0 &&
-						tasks.queue.empty())
-					{
-#ifdef TP_DEBUG
-						dp() << "Signalling that all tasks have been processed...";
-#endif
-						tasks.finished.notify_all();
-					}
-				}
-
-				--workers.count;
-				flags.prune = (workers.count > workers.target_count);
-
-				if (workers.count == 0)
-				{
-					kill_switch.notify_one();
-				}
-#ifdef TP_DEBUG
-				dp() << "\tWorker " << worker_id << " in thread " << std::this_thread::get_id() << " exiting";
-#endif
-
-			}).detach();
-		}
-
-		template <class T>
-		std::reference_wrapper<T> wrap(T& val)
-		{
-			return std::ref(val);
-		}
-
-		template <class T>
-		T&&	wrap(T&& val)
-		{
-			return std::forward<T>(val);
-		}
 
 	public:
 
-		ThreadPool(const uint _initial_workers = std::thread::hardware_concurrency())
+		ThreadPool(const uint _init_count = std::thread::hardware_concurrency())
 			:
-			  workers(_initial_workers)
+			  workers({0, _init_count})
 		{
-			resize(_initial_workers);
+			resize(_init_count);
 		}
 
 		~ThreadPool()
 		{
-#ifdef TP_DEBUG
-			dp() << "Notifying all threads that threadpool has reached EOL...";
-#endif
-			ulock lk(mtx);
-			flags.halt = true;
-			tasks.semaphore.notify_all();
-
-			/// Make sure that the queue is empty and there are no processes assigned
-			kill_switch.wait(lk, [&]
-			{
-				return (tasks.assigned == 0 && tasks.queue.empty() && workers.count == 0);
-			});
-
-			tasks.finished.notify_all();
+			stop();
+			finished.notify_all();
 
 #ifdef TP_DEBUG
 			dp() << "Task statistics:\n"
-				 << "\treceived: " << tasks.received << "\n"
-				 << "\tassigned: " << tasks.assigned << "\n"
-				 << "\tcompleted: " << tasks.completed << "\n"
-				 << "\taborted: " << tasks.aborted;
+				 << "\treceived: " << stats.received << "\n"
+				 << "\tassigned: " << stats.assigned << "\n"
+				 << "\tcompleted: " << stats.completed << "\n"
+				 << "\taborted: " << stats.aborted;
+
+			if (stats.received != stats.assigned + stats.completed + stats.aborted)
+			{
+				dp() << "Some tasks have been lost along the way!";
+				exit(1);
+			}
 #endif
 		}
 
@@ -244,28 +124,21 @@ namespace Async
 			/// Courtesy of https://stackoverflow.com/a/46565491/4639195.
 			auto task(std::make_shared<std::packaged_task<ret_t()>>(std::bind(std::forward<F>(_f), wrap(std::forward<Args>(_args))...)));
 
-			std::future<ret_t> result = task->get_future();
+			std::future<ret_t> result(task->get_future());
 
 			{
-				ulock lk(mtx);
-				if (!flags.halt)
+				glock lk(mtx);
+				if (!flags.stop)
 				{
-					++tasks.received;
+					++stats.received;
 					{
-						tasks.queue.emplace([=]{ (*task)(); });
+						queue.emplace([=]{ (*task)(); });
 #ifdef TP_DEBUG
-						dp() << "New task received (" << tasks.received << " in total), " << tasks.queue.size() << " task(s) enqueued";
+						dp() << "New task received (" << stats.received << " in total), " << queue.size() << " task(s) enqueued";
 #endif
 					}
-					lk.unlock();
-					tasks.semaphore.notify_one();
+					semaphore.notify_one();
 				}
-#ifdef TP_DEBUG
-				else
-				{
-					dp() << "Threadpool stopped, not accepting new tasks.";
-				}
-#endif
 			}
 
 			return result;
@@ -274,11 +147,8 @@ namespace Async
 		inline void resize(const uint _count)
 		{
 			glock lk(mtx);
-			if (flags.halt)
+			if (flags.stop)
 			{
-#ifdef TP_DEBUG
-				dp() << "Threadpool stopped, resizing not allowed.";
-#endif
 				return;
 			}
 
@@ -295,41 +165,39 @@ namespace Async
 
 		inline void stop()
 		{
-			glock lk(mtx);
-			if (flags.halt)
+			ulock lk(mtx);
+
+			if (flags.stop)
 			{
 #ifdef TP_DEBUG
 				dp() << "Threadpool already stopped.";
 #endif
 				return;
 			}
-
-			flags.halt = true;
-
+#ifdef TP_DEBUG
+			dp() << "Stopping threadpool...";
+#endif
+			flags.stop = true;
 			/// Empty the queue
 			{
-				while (!tasks.queue.empty())
+				while (!queue.empty())
 				{
-					tasks.queue.pop();
-					++tasks.aborted;
+					queue.pop();
+					++stats.aborted;
 				}
 			}
-
-			tasks.semaphore.notify_all();
+			lk.unlock();
+			wait();
 		}
 
 		inline void wait()
 		{
-			ulock lk(mtx);
-			if (flags.halt)
-			{
+			semaphore.notify_all();
 #ifdef TP_DEBUG
-				dp() << "Threadpool stopped, not waiting.";
+			dp() << "Waiting for tasks to finish...";
 #endif
-				return;
-			}
-
-			tasks.finished.wait(lk, [&] { return (tasks.queue.empty() && tasks.assigned == 0); });
+			ulock lk(mtx);
+			finished.wait(lk, [&] { return (queue.empty() && stats.assigned == 0); });
 		}
 
 		inline void pause()
@@ -342,6 +210,7 @@ namespace Async
 		{
 			glock lk(mtx);
 			flags.pause = false;
+			semaphore.notify_all();
 		}
 
 		inline uint worker_count()
@@ -353,27 +222,104 @@ namespace Async
 		inline uint tasks_enqueued()
 		{
 			glock lk(mtx);
-			return tasks.queue.size();
+			return queue.size();
 		}
 
 		inline uint tasks_received()
 		{
 			glock lk(mtx);
-			return tasks.received;
+			return stats.received;
 		}
 
 		inline uint tasks_completed()
 		{
 			glock lk(mtx);
-			return tasks.completed;
+			return stats.completed;
 		}
 
 		inline uint tasks_aborted()
 		{
 			glock lk(mtx);
-			return tasks.aborted;
+			return stats.aborted;
 		}
 
+	private:
+
+		inline void add_worker()
+		{
+			std::thread([&]
+			{
+				ulock lk(mtx);
+				std::function<void()> task;
+				++workers.count;
+#ifdef TP_DEBUG
+				uint worker_id(workers.count);
+				dp() << "\tWorker " << worker_id << " in thread " << std::this_thread::get_id() << " ready";
+#endif
+				while (true)
+				{
+					/// Block execution until we have something to process.
+					semaphore.wait(lk, [&]{ return flags.stop || flags.prune || !(flags.pause || queue.empty()); });
+
+					if (flags.stop ||
+						flags.prune )
+					{
+						break;
+					}
+
+					if (!queue.empty())
+					{
+						task = std::move(queue.front());
+						queue.pop();
+
+						/// Execute the task
+						++stats.assigned;
+
+#ifdef TP_DEBUG
+						dp() << stats.assigned << " task(s) assigned (" << queue.size() << " enqueued)";
+#endif
+
+						lk.unlock();
+						task();
+						lk.lock();
+
+						--stats.assigned;
+						++stats.completed;
+#ifdef TP_DEBUG
+						dp() << stats.assigned << " task(s) assigned (" << queue.size() << " enqueued)";
+#endif
+					}
+
+					if (queue.empty() &&
+						stats.assigned == 0)
+					{
+#ifdef TP_DEBUG
+						dp() << "Indicating that all tasks have been processed...";
+#endif
+						finished.notify_all();
+					}
+				}
+
+				--workers.count;
+				flags.prune = (workers.count > workers.target_count);
+
+#ifdef TP_DEBUG
+				dp() << "\tWorker " << worker_id << " in thread " << std::this_thread::get_id() << " exiting...";
+#endif
+			}).detach();
+		}
+
+		template <class T>
+		std::reference_wrapper<T> wrap(T& val)
+		{
+			return std::ref(val);
+		}
+
+		template <class T>
+		T&&	wrap(T&& val)
+		{
+			return std::forward<T>(val);
+		}
 	};
 }
-#endif // MAIN_HPP
+#endif // THREADPOOL_HPP

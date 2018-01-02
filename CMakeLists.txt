@@ -11,7 +11,7 @@ find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_BUILD_TYPE Debug CACHE STRING "Build type" FORCE)
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 set(tp_debug ON CACHE BOOL "Enable debug output" FORCE)
 set(bin_name "threadpool")
 
