@@ -97,8 +97,8 @@ namespace Async
 
 		~ThreadPool()
 		{
-			stop();
-			finished.notify_all();
+			flags.stop = true;
+			wait();
 
 #ifdef TP_DEBUG
 			dp() << "Task statistics:\n"
@@ -165,7 +165,7 @@ namespace Async
 
 		inline void stop()
 		{
-			ulock lk(mtx);
+			glock lk(mtx);
 
 			if (flags.stop)
 			{
@@ -186,8 +186,6 @@ namespace Async
 					++stats.aborted;
 				}
 			}
-			lk.unlock();
-			wait();
 		}
 
 		inline void wait()
@@ -261,7 +259,7 @@ namespace Async
 					/// Block execution until we have something to process.
 					semaphore.wait(lk, [&]{ return flags.stop || flags.prune || !(flags.pause || queue.empty()); });
 
-					if (flags.stop ||
+					if ((flags.stop && queue.empty()) ||
 						flags.prune )
 					{
 						break;
