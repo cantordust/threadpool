@@ -1,18 +1,27 @@
+# Note: This CMakeLists.txt is only required
+# if you want to run the example. Otherwise,
+# you can just #include threadpool.hpp
+# into your project. However, don't forget
+# to add the following to your CMakeLists.txt:
+#
+# find_package(Threads REQUIRED)
+#
+# as well as this *after* add_executable / add_library
+#
+# target_link_libraries(bin_or_lib_name ${CMAKE_THREAD_LIBS_INIT})
+#
+# See below for details.
+
 cmake_minimum_required(VERSION 3.2)
 
 project(threadpool)
 
 find_package(Threads REQUIRED)
 
-# Note: This CMakeLists.txt is only required
-# if you want to run the example.
-# Otherwise, you can just copy threadpool.hpp
-# into your project directory and #include it.
-
 set(CMAKE_CXX_STANDARD 14)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-set(tp_debug ON CACHE BOOL "Enable debug output" FORCE)
+set(tp_debug ON CACHE BOOL "Enable debug output")
 set(bin_name "threadpool")
 
 if(${tp_debug})
