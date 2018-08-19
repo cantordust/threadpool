@@ -97,47 +97,46 @@ int main(void)
 
 		for (uint run = 0; run < runs; ++run)
 		{
-			std::cout << "(main) Scheduling " << tasks << " task(s)";
+			std::cout << "(main) Scheduling " << tasks << " task(s).\n";
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			/// Synchronise
 			tp.wait();
-			std::cout << "(main) Tasks completed.";
+			std::cout << "(main) Tasks completed.\n";
 
 			workers = d_workers(rng);
 
-			std::cout << "(main) Resizing pool to " << workers << " worker(s).";
+			std::cout << "(main) Resizing pool to " << workers << " worker(s).\n";
 			tp.resize(workers);
 
-			std::cout << "(main) Scheduling " << tasks << " task(s).";
+			std::cout << "(main) Scheduling " << tasks << " task(s).\n";
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			if (d_stop(rng) < 0.1)
 			{
 				tp.stop();
-				std::cout << "(main) Threadpool stopped.";
+				std::cout << "(main) Threadpool stopped.\n";
 			}
 
 			if (d_pause(rng) < 0.33)
 			{
-				std::cout << "(main) Pausing threadpool...";
+				std::cout << "(main) Pausing threadpool...\n";
 				tp.pause();
 				uint sleep(3 * d_sleep(rng));
 
-				std::cout << "(main) Main sleeping for " << sleep << " milliseconds.";
+				std::cout << "(main) Main sleeping for " << sleep << " milliseconds.\n";
 				std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
 
-				std::cout << "(main) Resuming threadpool...";
+				std::cout << "(main) Resuming threadpool...\n";
 				tp.resume();
 			}
 		}
 
-		std::cout << "--> Destroying ThreadPool...";
+		std::cout << "--> Destroying ThreadPool...\n";
 
 	}
 
-	std::cout << "***** " << iterations << " iteration(s) completed successfully! *****";
-	std::cout << "Exiting main...";
+	std::cout << "\n***** " << iterations << " iteration(s) completed successfully! Exiting main.\n";
 
 	return 0;
 }
