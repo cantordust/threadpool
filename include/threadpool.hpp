@@ -53,8 +53,11 @@ namespace Async
 			std::cout << buf.str() << "\n";
 		}
 	};
-
+#define DP(...)	{ dp( __VA_ARGS__ ); }
+#else
+#define DP(...)
 #endif
+
 
 	/// @class Atomic flag guard
 	class fguard
@@ -212,9 +215,7 @@ namespace Async
 			flags.stop.store(true);
 			wait();
 
-#ifdef TP_DEBUG
-
-			dp("=====[ Task statistics ]=====",
+			DP("=====[ Task statistics ]=====",
 			   "\nReceived:\t", stats.received,
 			   "\nAssigned:\t", stats.assigned,
 			   "\nCompleted:\t", stats.completed,
@@ -222,10 +223,8 @@ namespace Async
 
 			if (stats.received != stats.assigned + stats.completed + stats.aborted)
 			{
-				dp("Some tasks have been lost along the way!");
-				exit(1);
+				DP("Some tasks have been lost along the way!");
 			}
-#endif
 		}
 
 		template<typename F, typename ... Args>
@@ -245,9 +244,8 @@ namespace Async
 					++stats.received;
 					{
 						queue.push([=]{ (*task)(); });
-#ifdef TP_DEBUG
-						dp("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")");
-#endif
+
+						DP("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")");
 					}
 					semaphore.notify_one();
 				}
@@ -278,14 +276,12 @@ namespace Async
 		{
 			if (flags.stop)
 			{
-#ifdef TP_DEBUG
-				dp("Threadpool already stopped.");
-#endif
+				DP("Threadpool already stopped.");
 				return;
 			}
-#ifdef TP_DEBUG
-			dp("Stopping threadpool...");
-#endif
+
+			DP("Stopping threadpool...");
+
 			flags.stop.store(true);
 
 			/// Empty the queue
@@ -296,9 +292,9 @@ namespace Async
 		void wait()
 		{
 			semaphore.notify_all();
-#ifdef TP_DEBUG
-			dp("Waiting for tasks to finish...");
-#endif
+
+			DP("Waiting for tasks to finish...");
+
 			ulock lk(mtx);
 			finished.wait(lk, [&] { return (queue.is_empty() && !stats.assigned); });
 		}
@@ -346,14 +342,15 @@ namespace Async
 			std::thread([&]
 			{
 				std::function<void()> task;
-#ifdef TP_DEBUG
+
 				uint worker_id(++workers.count);
-				dp("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " ready");
-#endif
+				DP("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " ready");
+
 				while (true)
 				{
 					{
 						ulock lk(mtx);
+
 						/// Block execution until we have something to process.
 						semaphore.wait(lk, [&]{ return flags.stop || flags.prune || !flags.pause || !queue.is_empty(); });
 					}
@@ -370,23 +367,22 @@ namespace Async
 						/// Execute the task
 						++stats.assigned;
 
-#ifdef TP_DEBUG
-						dp(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
-#endif
+						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
+
 						task();
 
 						--stats.assigned;
 						++stats.completed;
-#ifdef TP_DEBUG
-						dp(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
-#endif
+
+						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
+
 					}
 
 					if (!stats.assigned)
 					{
-#ifdef TP_DEBUG
-						dp("Signalling that all tasks have been processed...");
-#endif
+
+						DP("Signalling that all tasks have been processed...");
+
 						finished.notify_all();
 					}
 				}
@@ -394,19 +390,18 @@ namespace Async
 				--workers.count;
 				flags.prune.store(workers.count > workers.target_count);
 
-#ifdef TP_DEBUG
-				dp("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " exiting...");
-#endif
+				DP("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " exiting...");
+
 			}).detach();
 		}
 
-//		template<typename F, typename ... Args>
-//		uint add_func(F&& _f, Args&& ... _args)
-//		{
-////			using ret_t = typename std::result_of<F&>::type;
-//			std::function<void()> f([&]() -> decltype (_f(_args...)) { return _f(_args...); });
+		//		template<typename F, typename ... Args>
+		//		uint add_func(F&& _f, Args&& ... _args)
+		//		{
+		////			using ret_t = typename std::result_of<F&>::type;
+		//			std::function<void()> f([&]() -> decltype (_f(_args...)) { return _f(_args...); });
 
-//		}
+		//		}
 
 		template <class T>
 		std::reference_wrapper<T> wrap(T& val)

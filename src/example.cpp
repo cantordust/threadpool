@@ -1,5 +1,8 @@
 #include "threadpool.hpp"
 #include <random>
+#include <iostream>
+#include <string>
+#include <sstream>
 
 std::mutex sleep_mtx;
 static std::mt19937_64 rng;
@@ -87,52 +90,54 @@ int main(void)
 
 	for (uint it = 1; it <= iterations; ++it)
 	{
-		dp() << "\n************ Iteration " << it << "/" << iterations << " ************\n";
+		std::cout << "\n************ Iteration " << it << "/" << iterations << " ************\n";
 
 		uint workers(std::thread::hardware_concurrency());
 		ThreadPool tp(workers);
 
 		for (uint run = 0; run < runs; ++run)
 		{
-			dp() << "(main) Scheduling " << tasks << " task(s)";
+			std::cout << "(main) Scheduling " << tasks << " task(s)";
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			/// Synchronise
 			tp.wait();
-			dp() << "(main) Tasks completed.";
+			std::cout << "(main) Tasks completed.";
 
 			workers = d_workers(rng);
 
-			dp() << "(main) Resizing pool to " << workers << " worker(s).";
+			std::cout << "(main) Resizing pool to " << workers << " worker(s).";
 			tp.resize(workers);
 
-			dp() << "(main) Scheduling " << tasks << " task(s).";
+			std::cout << "(main) Scheduling " << tasks << " task(s).";
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			if (d_stop(rng) < 0.1)
 			{
 				tp.stop();
-				dp() << "(main) Threadpool stopped.";
+				std::cout << "(main) Threadpool stopped.";
 			}
 
 			if (d_pause(rng) < 0.33)
 			{
-				dp() << "(main) Pausing threadpool...";
+				std::cout << "(main) Pausing threadpool...";
 				tp.pause();
 				uint sleep(3 * d_sleep(rng));
-				dp() << "(main) Main sleeping for " << sleep << " milliseconds.";
+
+				std::cout << "(main) Main sleeping for " << sleep << " milliseconds.";
 				std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-				dp() << "(main) Resuming threadpool...";
+
+				std::cout << "(main) Resuming threadpool...";
 				tp.resume();
 			}
 		}
 
-		dp() << "--> Destroying ThreadPool...";
+		std::cout << "--> Destroying ThreadPool...";
 
 	}
 
-	dp() << "***** " << iterations << " iteration(s) completed successfully! *****";
-	dp() << "Exiting main...";
+	std::cout << "***** " << iterations << " iteration(s) completed successfully! *****";
+	std::cout << "Exiting main...";
 
 	return 0;
 }
