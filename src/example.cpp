@@ -134,6 +134,10 @@ int main(void)
 
 		std::cout << "--> Destroying ThreadPool...\n";
 
+#ifdef TP_BENCH
+		std::cout << "Average enqueue time: " << static_cast<double>(tp.enqueue_duration) / (1.0e6 * tp.tasks_received()) << " ms\n";
+#endif
+
 	}
 
 	std::cout << "\n***** " << iterations << " iteration(s) completed successfully! Exiting main.\n";

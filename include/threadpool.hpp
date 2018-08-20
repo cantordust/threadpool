@@ -10,9 +10,9 @@
 #include <atomic>
 #include <functional>
 
+#include <iostream>
 #ifdef TP_DEBUG
 
-#include <iostream>
 #include <string>
 #include <sstream>
 
@@ -22,55 +22,58 @@ namespace Async
 {
 	using uint = unsigned int;
 	using auint = std::atomic<uint>;
-	using flag = std::atomic<bool>;
+	using toggle = std::atomic<bool>;
+	using flag = std::atomic_flag;
 	using ulock = std::unique_lock<std::mutex>;
 	using glock = std::lock_guard<std::mutex>;
 	using cv = std::condition_variable;
-	template<typename T1, typename T2, typename ... Rest>
-	using hmap = std::unordered_map<T1, T2, Rest ...>;
 
 #ifdef TP_DEBUG
 
-	/// Mutex for outputting to std::cout
-	static std::mutex dp_mutex;
-
-	/// Rudimentary debug printer class.
-	class dp
+	namespace Debug
 	{
-		std::stringstream buf;
+		/// Mutex for outputting to std::cout
+		static std::mutex dp_mutex;
 
-	public:
-
-		template<typename ... Args>
-		dp(Args&& ... _args)
+		/// Rudimentary debug printer class.
+		class Printer
 		{
-			std::array<int, sizeof...(_args)> status{(buf << std::forward<Args>(_args), 0) ...};
-		}
+			std::stringstream buf;
 
-		~dp()
-		{
-			glock lk(dp_mutex);
-			std::cout << buf.str() << "\n";
-		}
-	};
-#define DP(...)	{ dp( __VA_ARGS__ ); }
+		public:
+
+			template<typename ... Args>
+			Printer(Args&& ... _args)
+			{
+				std::array<int, sizeof...(_args)> status{(buf << std::forward<Args>(_args), 0) ...};
+			}
+
+			~Printer()
+			{
+				glock lk(dp_mutex);
+				std::cout << buf.str() << "\n";
+			}
+		};
+	}
+#define DP(...)	{ Debug::Printer( __VA_ARGS__ ); }
+
 #else
 #define DP(...)
-#endif
 
+#endif
 
 	/// @class Atomic flag guard
 	class fguard
 	{
 	private:
 
-		std::atomic_flag& f;
+		flag& f;
 
 	public:
 
 		fguard() = delete;
 
-		explicit fguard(std::atomic_flag& _f)
+		explicit fguard(flag& _f)
 			:
 			  f(_f)
 		{
@@ -92,50 +95,57 @@ namespace Async
 	{
 	private:
 
-		std::atomic_flag flag = ATOMIC_FLAG_INIT;
+		flag f = ATOMIC_FLAG_INIT;
 		std::deque<T> queue;
 
 	public:
 
 		void push(const T& _t)
 		{
-			fguard fg(flag);
+			fguard fg(f);
 			queue.push_back(_t);
 		}
 
 		void push(T&& _t)
 		{
-			fguard fg(flag);
+			fguard fg(f);
 			queue.emplace_back(_t);
 		}
 
 		bool pop(T& _t)
 		{
-			fguard fg(flag);
+			fguard fg(f);
 			if (queue.empty())
 			{
 				return false;
 			}
-			_t = queue.front();
+			_t = std::move(queue.front());
 			queue.pop_front();
 			return true;
 		}
 
+		template<typename ... Args>
+		void emplace(Args&& ... _args)
+		{
+			fguard fg(f);
+			queue.emplace_back(std::forward<Args>(_args)...);
+		}
+
 		bool is_empty()
 		{
-			fguard fg(flag);
+			fguard fg(f);
 			return queue.empty();
 		}
 
 		auto size()
 		{
-			fguard fg(flag);
+			fguard fg(f);
 			return queue.size();
 		}
 
 		void clear()
 		{
-			fguard fg(flag);
+			fguard fg(f);
 			queue.clear();
 		}
 	};
@@ -143,6 +153,13 @@ namespace Async
 	/// @class Threadpool
 	class ThreadPool
 	{
+
+#ifdef TP_BENCH
+	public:
+
+		uint enqueue_duration = 0;
+#endif
+
 	private:
 
 		/// Task queue
@@ -160,9 +177,9 @@ namespace Async
 
 		struct Flags
 		{
-			flag stop;
-			flag prune;
-			flag pause;
+			toggle stop;
+			toggle prune;
+			toggle pause;
 			Flags()
 				:
 				  stop(false),
@@ -177,6 +194,7 @@ namespace Async
 			auint assigned;
 			auint completed;
 			auint aborted;
+
 			Stats()
 				:
 				  received(0),
@@ -196,10 +214,6 @@ namespace Async
 				  target_count(_target_count)
 			{}
 		} workers;
-
-		/// Registered functions.
-		/// @todo Implementation.
-		hmap<uint, std::function<void()>> functions;
 
 	public:
 
@@ -232,6 +246,10 @@ namespace Async
 		{
 			using ret_t = typename std::result_of<F& (Args&...)>::type;
 
+#ifdef TP_BENCH
+			auto start(std::chrono::high_resolution_clock::now());
+#endif
+
 			/// Using a conditional wrapper to avoid dangling references.
 			/// Courtesy of https://stackoverflow.com/a/46565491/4639195.
 			auto task(std::make_shared<std::packaged_task<ret_t()>>(std::bind(std::forward<F>(_f), wrap(std::forward<Args>(_args))...)));
@@ -242,14 +260,20 @@ namespace Async
 				if (!flags.stop)
 				{
 					++stats.received;
-					{
-						queue.push([=]{ (*task)(); });
 
-						DP("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")");
-					}
+					queue.push([=]{ (*task)(); });
+
+					// DP("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")");
+
 					semaphore.notify_one();
 				}
 			}
+
+#ifdef TP_BENCH
+			uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
+			enqueue_duration += ns;
+			std::cout << "Enqueue took " << ns << " ns\n";
+#endif
 
 			return result;
 		}
@@ -296,7 +320,10 @@ namespace Async
 			DP("Waiting for tasks to finish...");
 
 			ulock lk(mtx);
-			finished.wait(lk, [&] { return (queue.is_empty() && !stats.assigned); });
+			finished.wait(lk, [&]
+			{
+				return (queue.is_empty() && !stats.assigned);
+			});
 		}
 
 		void pause()
@@ -352,7 +379,10 @@ namespace Async
 						ulock lk(mtx);
 
 						/// Block execution until we have something to process.
-						semaphore.wait(lk, [&]{ return flags.stop || flags.prune || !flags.pause || !queue.is_empty(); });
+						semaphore.wait(lk, [&]
+						{
+							return flags.stop || flags.prune || !flags.pause || !queue.is_empty();
+						});
 					}
 
 					if (flags.prune ||
@@ -364,23 +394,23 @@ namespace Async
 
 					if (queue.pop(task))
 					{
-						/// Execute the task
+						/// Update the stats
 						++stats.assigned;
 
 						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
 
+						/// Execute the task
 						task();
 
+						/// Update the stats
 						--stats.assigned;
 						++stats.completed;
 
 						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
-
 					}
 
 					if (!stats.assigned)
 					{
-
 						DP("Signalling that all tasks have been processed...");
 
 						finished.notify_all();
@@ -394,14 +424,6 @@ namespace Async
 
 			}).detach();
 		}
-
-		//		template<typename F, typename ... Args>
-		//		uint add_func(F&& _f, Args&& ... _args)
-		//		{
-		////			using ret_t = typename std::result_of<F&>::type;
-		//			std::function<void()> f([&]() -> decltype (_f(_args...)) { return _f(_args...); });
-
-		//		}
 
 		template <class T>
 		std::reference_wrapper<T> wrap(T& val)
