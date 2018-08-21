@@ -242,9 +242,9 @@ namespace Async
 			if (stats.received != stats.assigned + stats.completed + stats.aborted)
 			{
 #ifdef TP_THROW
-				throw std::out_of_range("Some tasks have been lost along the way!");
+				throw std::out_of_range("\n!!! ERROR: !!! Some tasks have been lost along the way!\n");
 #else
-				LOG("Some tasks have been lost along the way!")
+				LOG("\n!!! ERROR: !!! Some tasks have been lost along the way!\n")
 #endif
 			}
 		}
