@@ -21,8 +21,9 @@ find_package(Threads REQUIRED)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-set(tp_debug OFF CACHE BOOL "Enable debug output")
-set(tp_bench ON CACHE BOOL "Enable benchmarking for the enqueue() operation output")
+set(tp_debug OFF CACHE BOOL "Enable debug output.")
+set(tp_throw OFF CACHE BOOL "Allow the threadpool to throw exceptions.")
+set(tp_bench ON CACHE BOOL "Enable benchmarking for the enqueue() operation.")
 set(bin_name "threadpool")
 
 if(${tp_debug})
@@ -31,6 +32,10 @@ endif()
 
 if(${tp_bench})
 	add_definitions(-DTP_BENCH)
+endif()
+
+if(${tp_throw})
+	add_definitions(-DTP_THROW)
 endif()
 
 set(

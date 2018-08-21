@@ -2,9 +2,9 @@
 #include <random>
 #include <iostream>
 #include <string>
-#include <sstream>
 
-std::mutex sleep_mtx;
+using namespace Async;
+
 static std::mt19937_64 rng;
 static std::uniform_int_distribution<uint> d_function(0, 3);
 static std::uniform_int_distribution<uint> d_tasks(10, 25);
@@ -13,39 +13,55 @@ static std::uniform_int_distribution<uint> d_sleep(100, 1000);
 static std::uniform_real_distribution<double> d_stop(0.0, 1.0);
 static std::uniform_real_distribution<double> d_pause(0.0, 1.0);
 
+inline static flag sleep_flag = ATOMIC_FLAG_INIT;
+
 uint rnd_sleep()
 {
-	Async::glock lk(sleep_mtx);
+	LockFree::fguard fg(sleep_flag);
 	return d_sleep(rng);
 }
 
 void void_void()
 {
+	static auint call_count{0};
+	uint tl_count(++call_count);
+	LOG("\tvoid void_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+	LOG("\tvoid void_void() # ", tl_count, " exiting...");
 }
 
 uint uint_void()
 {
+	static auint call_count{0};
+	uint tl_count(++call_count);
+	LOG("\tuint uint_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+	LOG("\tuint uint_void() # ", tl_count, "  exiting...");
 	return sleep;
 }
 
 std::string string_void()
 {
+	static auint call_count{0};
+	uint tl_count(++call_count);
+	LOG("\tstd::string string_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+	LOG("\tstd::string string_void() # ", tl_count, "  exiting...");
 	return std::to_string(sleep);
 }
 
 void void_uint(const uint _num)
 {
+	static auint call_count{0};
+	uint tl_count(++call_count);
+	LOG("\tvoid void_uint(const uint) call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+	LOG("\tvoid void_uint(const uint _num) # ", tl_count, " exiting...");
 }
-
-using namespace Async;
 
 void schedule(ThreadPool& _tp, const uint _tasks)
 {
@@ -55,25 +71,25 @@ void schedule(ThreadPool& _tp, const uint _tasks)
 		{
 		case 0:
 			{
-				_tp.enqueue(void_void);
+				_tp.enqueue(&void_void);
 				break;
 			}
 
 		case 1:
 			{
-				auto future(_tp.enqueue(uint_void));
+				auto future(_tp.enqueue(&uint_void));
 				break;
 			}
 
 		case 2:
 			{
-				auto future(_tp.enqueue(string_void));
+				auto future(_tp.enqueue(&string_void));
 				break;
 			}
 
 		case 3:
 			{
-				_tp.enqueue(void_uint, t);
+				_tp.enqueue(&void_uint, t);
 				break;
 			}
 		}
@@ -84,63 +100,77 @@ int main(void)
 {
 	rng.seed(static_cast<uint>(std::chrono::high_resolution_clock().now().time_since_epoch().count()));
 
+	using Debug::log;
+
 	uint tasks(d_tasks(rng));
 	uint iterations(10);
 	uint runs(10);
 
+#ifdef TP_BENCH
+	double enqueue_duration(0.0);
+	double total_tasks(0.0);
+#endif
+
 	for (uint it = 1; it <= iterations; ++it)
 	{
-		std::cout << "\n************ Iteration " << it << "/" << iterations << " ************\n";
+		log("\n===============[ Iteration ", it, "/", iterations, " ]===============\n");
 
 		uint workers(std::thread::hardware_concurrency());
 		ThreadPool tp(workers);
 
 		for (uint run = 0; run < runs; ++run)
 		{
-			std::cout << "(main) Scheduling " << tasks << " task(s).\n";
+			log("(main) Scheduling ", tasks, " task(s).");
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			/// Synchronise
 			tp.wait();
-			std::cout << "(main) Tasks completed.\n";
+			log("(main) Tasks completed.");
 
 			workers = d_workers(rng);
 
-			std::cout << "(main) Resizing pool to " << workers << " worker(s).\n";
+			log("(main) Resizing pool to ", workers, " worker(s).");
 			tp.resize(workers);
 
-			std::cout << "(main) Scheduling " << tasks << " task(s).\n";
+			log("(main) Scheduling ", tasks, " task(s).");
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			if (d_stop(rng) < 0.1)
 			{
 				tp.stop();
-				std::cout << "(main) Threadpool stopped.\n";
+				log("(main) Threadpool stopped.");
 			}
 
 			if (d_pause(rng) < 0.33)
 			{
-				std::cout << "(main) Pausing threadpool...\n";
+				log("(main) Pausing threadpool...");
 				tp.pause();
 				uint sleep(3 * d_sleep(rng));
 
-				std::cout << "(main) Main sleeping for " << sleep << " milliseconds.\n";
+				log("(main) Main sleeping for ", sleep, " milliseconds.");
 				std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
 
-				std::cout << "(main) Resuming threadpool...\n";
+				log("(main) Resuming threadpool...");
 				tp.resume();
 			}
 		}
 
-		std::cout << "--> Destroying ThreadPool...\n";
+		log("(main) Destroying ThreadPool...");
 
 #ifdef TP_BENCH
-		std::cout << "Average enqueue time: " << static_cast<double>(tp.enqueue_duration) / (1.0e6 * tp.tasks_received()) << " ms\n";
+		enqueue_duration += static_cast<double>(tp.enqueue_duration);
+		total_tasks += static_cast<double>(tp.tasks_received());
 #endif
 
 	}
 
-	std::cout << "\n***** " << iterations << " iteration(s) completed successfully! Exiting main.\n";
+	log("\n===============[ The End ]===============\n");
+
+#ifdef TP_BENCH
+		log("(main) Average enqueue time: ", enqueue_duration / total_tasks, " ns");
+#endif
+
+	log("(main) ", iterations, " iteration(s) completed successfully! Exiting main.");
 
 	return 0;
 }
