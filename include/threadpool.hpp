@@ -4,18 +4,18 @@
 #include <deque>
 #include <condition_variable>
 #include <future>
-#include <unordered_map>
 #include <thread>
 #include <mutex>
 #include <atomic>
 #include <functional>
-
 #include <iostream>
+#include <type_traits>
+#include <typeinfo>
+
 #ifdef TP_DEBUG
-
-#include <string>
-#include <sstream>
-
+#define DP(...)	{ Debug::log( __VA_ARGS__ ); }
+#else
+#define DP(...)
 #endif
 
 namespace Async
@@ -28,127 +28,173 @@ namespace Async
 	using glock = std::lock_guard<std::mutex>;
 	using cv = std::condition_variable;
 
-#ifdef TP_DEBUG
-
-	namespace Debug
+	namespace LockFree
 	{
-		/// Mutex for outputting to std::cout
-		static std::mutex dp_mutex;
-
-		/// Rudimentary debug printer class.
-		class Printer
+		/// @class Atomic flag guard
+		class fguard
 		{
-			std::stringstream buf;
+		private:
+
+			flag& f;
 
 		public:
 
-			template<typename ... Args>
-			Printer(Args&& ... _args)
+			fguard() = delete;
+
+			explicit fguard(flag& _f)
+				:
+				  f(_f)
 			{
-				std::array<int, sizeof...(_args)> status{(buf << std::forward<Args>(_args), 0) ...};
+				while (f.test_and_set(std::memory_order_acquire));
 			}
 
-			~Printer()
+			~fguard()
 			{
-				glock lk(dp_mutex);
-				std::cout << buf.str() << "\n";
+				f.clear(std::memory_order_release);
+			}
+
+			fguard (const fguard& _other) = delete;
+
+			fguard& operator = (const fguard& _other) = delete;
+		};
+	}
+
+	///=============================================================================
+	///	Debug printing
+	///=============================================================================
+
+	namespace Debug
+	{
+		inline static flag output_flag = ATOMIC_FLAG_INIT;
+
+		/// Rudimentary debug printing.
+		template<typename ... Args>
+		void log(Args&& ... _args)
+		{
+			LockFree::fguard fg(output_flag);
+			std::array<int, sizeof...(_args)> status{(std::cout << std::forward<Args>(_args), 0) ...};
+			std::cout << '\n';
+		}
+	}
+
+	///=============================================================================
+	///	Storage classes
+	///=============================================================================
+
+	namespace Storage
+	{
+		///=====================================
+		/// Task base and executor
+		///=====================================
+
+		struct TaskBase
+		{
+			virtual ~TaskBase() {};
+			virtual void operator()() = 0;
+		};
+
+		using TaskPtr = std::unique_ptr<TaskBase>;
+
+		template<typename F, typename Ret, typename ... Args>
+		struct TaskExecutor : TaskBase
+		{
+			std::function<Ret(Args&&...)> func;
+			std::promise<Ret> promise;
+			std::tuple<Args&& ...> args;
+
+			constexpr TaskExecutor(F&& _f, std::promise<Ret>&& _promise, Args&& ... _args)
+				:
+				  func(std::forward<F>(_f)),
+				  promise(std::move(_promise)),
+				  args(std::forward<Args>(_args)...)
+			{}
+
+			virtual ~TaskExecutor() {};
+
+			virtual void operator()() override final
+			{
+				if constexpr (std::is_void<Ret>::value)
+				{
+					std::apply(func, args);
+					promise.set_value();
+				}
+				else
+				{
+					promise.set_value(std::apply(func, args));
+				}
+			}
+		};
+
+		///=====================================
+		/// Lock-free queue
+		///=====================================
+
+		template<typename T>
+		class lfq
+		{
+		private:
+
+			using fguard = LockFree::fguard;
+
+			flag f = ATOMIC_FLAG_INIT;
+			std::deque<T> queue;
+
+		public:
+
+			void push(const T& _t)
+			{
+				fguard fg(f);
+				queue.push_back(_t);
+			}
+
+			void push(T&& _t)
+			{
+				fguard fg(f);
+				queue.emplace_back(std::move(_t));
+			}
+
+			template<typename ... Args>
+			void emplace(Args&& ... _args)
+			{
+				fguard fg(f);
+				queue.emplace_back(std::forward<Args>(_args)...);
+			}
+
+			bool pop(T& _t)
+			{
+				fguard fg(f);
+				if (queue.empty())
+				{
+					return false;
+				}
+				_t = std::move(queue.front());
+				queue.pop_front();
+				return true;
+			}
+
+			bool is_empty()
+			{
+				fguard fg(f);
+				return queue.empty();
+			}
+
+			auto size()
+			{
+				fguard fg(f);
+				return queue.size();
+			}
+
+			void clear()
+			{
+				fguard fg(f);
+				queue.clear();
 			}
 		};
 	}
-#define DP(...)	{ Debug::Printer( __VA_ARGS__ ); }
 
-#else
-#define DP(...)
-
-#endif
-
-	/// @class Atomic flag guard
-	class fguard
-	{
-	private:
-
-		flag& f;
-
-	public:
-
-		fguard() = delete;
-
-		explicit fguard(flag& _f)
-			:
-			  f(_f)
-		{
-			while (f.test_and_set(std::memory_order_acquire));
-		}
-
-		~fguard()
-		{
-			f.clear(std::memory_order_release);
-		}
-
-		fguard(const fguard&) = delete;
-		fguard& operator=(const fguard&) = delete;
-	};
-
-	/// @class Lock-free queue
-	template<typename T>
-	class lfq
-	{
-	private:
-
-		flag f = ATOMIC_FLAG_INIT;
-		std::deque<T> queue;
-
-	public:
-
-		void push(const T& _t)
-		{
-			fguard fg(f);
-			queue.push_back(_t);
-		}
-
-		void push(T&& _t)
-		{
-			fguard fg(f);
-			queue.emplace_back(_t);
-		}
-
-		bool pop(T& _t)
-		{
-			fguard fg(f);
-			if (queue.empty())
-			{
-				return false;
-			}
-			_t = std::move(queue.front());
-			queue.pop_front();
-			return true;
-		}
-
-		template<typename ... Args>
-		void emplace(Args&& ... _args)
-		{
-			fguard fg(f);
-			queue.emplace_back(std::forward<Args>(_args)...);
-		}
-
-		bool is_empty()
-		{
-			fguard fg(f);
-			return queue.empty();
-		}
-
-		auto size()
-		{
-			fguard fg(f);
-			return queue.size();
-		}
-
-		void clear()
-		{
-			fguard fg(f);
-			queue.clear();
-		}
-	};
+	///=============================================================================
+	///	Main feature
+	///=============================================================================
 
 	/// @class Threadpool
 	class ThreadPool
@@ -163,7 +209,7 @@ namespace Async
 	private:
 
 		/// Task queue
-		lfq<std::function<void()>> queue;
+		Storage::lfq<Storage::TaskPtr> queue;
 
 		/// Mutex for the condition variables
 		std::mutex mtx;
@@ -224,58 +270,101 @@ namespace Async
 			resize(_init_count);
 		}
 
-		~ThreadPool()
+		~ThreadPool() noexcept(false)
 		{
 			flags.stop.store(true);
 			wait();
 
-			DP("=====[ Task statistics ]=====",
+			DP("\n=====[ Task statistics ]=====",
 			   "\nReceived:\t", stats.received,
 			   "\nAssigned:\t", stats.assigned,
 			   "\nCompleted:\t", stats.completed,
-			   "\nAborted:\t", stats.aborted);
+			   "\nAborted:\t", stats.aborted,
+			   "\n")
 
 			if (stats.received != stats.assigned + stats.completed + stats.aborted)
 			{
-				DP("Some tasks have been lost along the way!");
+				DP("Some tasks have been lost along the way!")
+				throw std::out_of_range("Some tasks have been lost along the way!");
 			}
 		}
 
+		//		template<typename F, typename ... Args>
+		//		auto enqueue(F&& _f, Args&&... _args)
+		//		{
+		//			using ret_t = typename std::result_of<F& (Args&...)>::type;
+
+		//#ifdef TP_BENCH
+		//			auto start(std::chrono::high_resolution_clock::now());
+		//#endif
+
+		//			/// Using a conditional wrapper to avoid dangling references.
+		//			/// Courtesy of https://stackoverflow.com/a/46565491/4639195.
+		//			auto task(std::make_shared<std::packaged_task<ret_t()>>(std::bind(std::forward<F>(_f), wrap(std::forward<Args>(_args))...)));
+
+		//			std::future<ret_t> result(task->get_future());
+
+		//			{
+		//				if (!flags.stop)
+		//				{
+		//					++stats.received;
+
+		//					queue.push([=]{ (*task)(); });
+
+		//					// DP("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")")
+
+		//					semaphore.notify_one();
+		//				}
+		//			}
+
+		//#ifdef TP_BENCH
+		//			uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
+		//			enqueue_duration += ns;
+		//			std::cout << "Enqueue took " << ns << " ns\n";
+		//#endif
+
+		//			return result;
+		//		}
+
 		template<typename F, typename ... Args>
-		auto enqueue(F&& _f, Args&&... _args)
+		auto enqueue(F&& _f, Args&& ... _args) -> std::future<typename std::result_of<F(Args...)>::type>
 		{
-			using ret_t = typename std::result_of<F& (Args&...)>::type;
+			using Ret = typename std::result_of<F(Args...)>::type;
 
 #ifdef TP_BENCH
 			auto start(std::chrono::high_resolution_clock::now());
 #endif
 
-			/// Using a conditional wrapper to avoid dangling references.
-			/// Courtesy of https://stackoverflow.com/a/46565491/4639195.
-			auto task(std::make_shared<std::packaged_task<ret_t()>>(std::bind(std::forward<F>(_f), wrap(std::forward<Args>(_args))...)));
+			std::promise<Ret> promise;
+			std::future<Ret> future(promise.get_future());
 
-			std::future<ret_t> result(task->get_future());
-
+			if (flags.stop)
 			{
-				if (!flags.stop)
+				if constexpr (std::is_void<Ret>::value)
 				{
-					++stats.received;
-
-					queue.push([=]{ (*task)(); });
-
-					// DP("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")");
-
-					semaphore.notify_one();
+					promise.set_value();
 				}
+				else
+				{
+					promise.set_value(Ret());
+				}
+				return future;
 			}
+
+			++stats.received;
+
+			queue.emplace(std::make_unique<Storage::TaskExecutor<F, Ret, Args...>>(std::forward<F>(_f), std::move(promise), std::forward<Args>(_args)...));
+
+			semaphore.notify_one();
 
 #ifdef TP_BENCH
 			uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
 			enqueue_duration += ns;
-			std::cout << "Enqueue took " << ns << " ns\n";
+			DP("Enqueue took ", ns, " ns")
 #endif
+			DP("New task enqueued (Received: ", stats.received, ", enqueued: ", queue.size(), ")")
 
-			return result;
+			return future;
 		}
 
 		void resize(const uint _count)
@@ -300,11 +389,11 @@ namespace Async
 		{
 			if (flags.stop)
 			{
-				DP("Threadpool already stopped.");
+				DP("Threadpool already stopped.")
 				return;
 			}
 
-			DP("Stopping threadpool...");
+			DP("Stopping threadpool...")
 
 			flags.stop.store(true);
 
@@ -317,7 +406,7 @@ namespace Async
 		{
 			semaphore.notify_all();
 
-			DP("Waiting for tasks to finish...");
+			DP("Waiting for tasks to finish...")
 
 			ulock lk(mtx);
 			finished.wait(lk, [&]
@@ -368,10 +457,10 @@ namespace Async
 		{
 			std::thread([&]
 			{
-				std::function<void()> task;
+				Storage::TaskPtr task(nullptr);
 
 				uint worker_id(++workers.count);
-				DP("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " ready");
+				DP("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " ready")
 
 				while (true)
 				{
@@ -397,16 +486,16 @@ namespace Async
 						/// Update the stats
 						++stats.assigned;
 
-						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
+						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)")
 
 						/// Execute the task
-						task();
+						(*task)();
 
 						/// Update the stats
 						--stats.assigned;
 						++stats.completed;
 
-						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)");
+						DP(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)")
 					}
 
 					if (!stats.assigned)
@@ -420,7 +509,7 @@ namespace Async
 				--workers.count;
 				flags.prune.store(workers.count > workers.target_count);
 
-				DP("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " exiting...");
+				DP("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " exiting...")
 
 			}).detach();
 		}
