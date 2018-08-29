@@ -77,14 +77,14 @@ void schedule(ThreadPool& _tp, const uint _tasks)
 		case 1:
 			{
 				auto future(_tp.enqueue(&uint_void));
-				LOG("\tCase 1: ", future.get());
+//				LOG("\tCase 1: ", future.get());
 				break;
 			}
 
 		case 2:
 			{
 				auto future(_tp.enqueue(&string_void));
-				LOG("\tCase 2: ", future.get());
+//				LOG("\tCase 2: ", future.get());
 				break;
 			}
 
