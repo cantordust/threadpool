@@ -13,11 +13,10 @@ static std::uniform_int_distribution<uint> d_sleep(100, 1000);
 static std::uniform_real_distribution<double> d_stop(0.0, 1.0);
 static std::uniform_real_distribution<double> d_pause(0.0, 1.0);
 
-inline static flag sleep_flag = ATOMIC_FLAG_INIT;
-
 uint rnd_sleep()
 {
-	LockFree::fguard fg(sleep_flag);
+	static std::mutex mtx;
+	glock lk(mtx);
 	return d_sleep(rng);
 }
 
@@ -78,12 +77,14 @@ void schedule(ThreadPool& _tp, const uint _tasks)
 		case 1:
 			{
 				auto future(_tp.enqueue(&uint_void));
+				LOG("\tCase 1: ", future.get());
 				break;
 			}
 
 		case 2:
 			{
 				auto future(_tp.enqueue(&string_void));
+				LOG("\tCase 2: ", future.get());
 				break;
 			}
 

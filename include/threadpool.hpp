@@ -27,41 +27,9 @@ namespace Async
 	using uint = unsigned int;
 	using auint = std::atomic<uint>;
 	using toggle = std::atomic<bool>;
-	using flag = std::atomic_flag;
 	using ulock = std::unique_lock<std::mutex>;
 	using glock = std::lock_guard<std::mutex>;
 	using cv = std::condition_variable;
-
-	namespace LockFree
-	{
-		/// @class Atomic flag guard
-		class fguard
-		{
-		private:
-
-			flag& f;
-
-		public:
-
-			fguard() = delete;
-
-			explicit fguard(flag& _f)
-				:
-				  f(_f)
-			{
-				while (f.test_and_set(std::memory_order_acquire));
-			}
-
-			~fguard()
-			{
-				f.clear(std::memory_order_release);
-			}
-
-			fguard (const fguard& _other) = delete;
-
-			fguard& operator = (const fguard& _other) = delete;
-		};
-	}
 
 	///=============================================================================
 	///	Debug printing
@@ -69,13 +37,13 @@ namespace Async
 
 	namespace Debug
 	{
-		inline static flag output_flag = ATOMIC_FLAG_INIT;
+		static std::mutex cout_mutex;
 
 		/// Rudimentary debug printing.
 		template<typename ... Args>
 		void log(Args&& ... _args)
 		{
-			LockFree::fguard fg(output_flag);
+			glock lk(cout_mutex);
 			std::array<int, sizeof...(_args)> status{(std::cout << std::forward<Args>(_args), 0) ...};
 			std::cout << '\n';
 		}
@@ -92,35 +60,33 @@ namespace Async
 		{
 		private:
 
-			using fguard = LockFree::fguard;
-
-			flag f = ATOMIC_FLAG_INIT;
+			std::mutex mtx;
 			std::deque<T> queue;
 
 		public:
 
 			void push(const T& _t)
 			{
-				fguard fg(f);
+				glock lk(mtx);
 				queue.push_back(_t);
 			}
 
 			void push(T&& _t)
 			{
-				fguard fg(f);
+				glock lk(mtx);
 				queue.emplace_back(std::move(_t));
 			}
 
 			template<typename ... Args>
 			void emplace(Args&& ... _args)
 			{
-				fguard fg(f);
+				glock lk(mtx);
 				queue.emplace_back(std::forward<Args>(_args)...);
 			}
 
 			bool pop(T& _t)
 			{
-				fguard fg(f);
+				glock lk(mtx);
 				if (queue.empty())
 				{
 					return false;
@@ -132,19 +98,19 @@ namespace Async
 
 			bool is_empty()
 			{
-				fguard fg(f);
+				glock lk(mtx);
 				return queue.empty();
 			}
 
-			auto size()
+			std::size_t size()
 			{
-				fguard fg(f);
+				glock lk(mtx);
 				return queue.size();
 			}
 
 			void clear()
 			{
-				fguard fg(f);
+				glock lk(mtx);
 				queue.clear();
 			}
 		};
@@ -254,21 +220,22 @@ namespace Async
 		{
 			using Ret = typename std::result_of<F& (Args&...)>::type;
 
-			if (flags.stop)
-			{
-				return std::future<Ret>();
-			}
-
 #ifdef TP_BENCH
 			auto start(std::chrono::high_resolution_clock::now());
 #endif
-			++stats.received;
 
 			/// Using a conditional wrapper to avoid dangling references.
 			/// Courtesy of https://stackoverflow.com/a/46565491/4639195.
 			auto task(std::make_shared<std::packaged_task<Ret()>>(std::bind(std::forward<F>(_f), wrap(std::forward<Args>(_args))...)));
 
-			std::future<Ret> result(task->get_future());
+			std::future<Ret> future(task->get_future());
+
+			if (flags.stop)
+			{
+				return future;
+			}
+
+			++stats.received;
 
 			queue.push([=]{ (*task)(); });
 
@@ -277,11 +244,11 @@ namespace Async
 #ifdef TP_BENCH
 			uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
 			enqueue_duration += ns;
-			LOG("Enqueue took ", ns, " ns\n")
+			Debug::log("Enqueue took ", ns, " ns");
 #endif
 			LOG("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")")
 
-			return result;
+			return future;
 		}
 
 		void resize(const uint _count)
