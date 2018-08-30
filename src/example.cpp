@@ -125,7 +125,7 @@ int main(void)
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			/// Synchronise
-			tp.wait();
+			tp.sync();
 			log("(main) Tasks completed.");
 
 			workers = d_workers(rng);

@@ -9,6 +9,7 @@
 #include <atomic>
 #include <functional>
 #include <iostream>
+#include <unordered_map>
 
 #ifdef TP_DEBUG
 #define LOG(...) Debug::log( __VA_ARGS__ );
@@ -27,9 +28,13 @@ namespace Async
 	using uint = unsigned int;
 	using auint = std::atomic<uint>;
 	using toggle = std::atomic<bool>;
-	using ulock = std::unique_lock<std::mutex>;
-	using glock = std::lock_guard<std::mutex>;
-	using cv = std::condition_variable;
+	using mutex = std::mutex;
+	using cvar = std::condition_variable;
+	using thread_id = std::thread::id;
+	using ulock = std::unique_lock<mutex>;
+	using glock = std::lock_guard<mutex>;
+	template<typename T1, typename T2>
+	using hmap = std::unordered_map<T1, T2>;
 
 	///=============================================================================
 	///	Debug printing
@@ -37,7 +42,7 @@ namespace Async
 
 	namespace Debug
 	{
-		static std::mutex cout_mutex;
+		static mutex cout_mutex;
 
 		/// Rudimentary debug printing.
 		template<typename ... Args>
@@ -48,6 +53,34 @@ namespace Async
 			std::cout << '\n';
 		}
 	}
+
+	struct Semaphore
+	{
+		mutex mtx;
+		cvar cv;
+
+		void wait()
+		{
+			ulock lk(mtx);
+			cv.wait(lk);
+		}
+
+		void wait(std::function<bool()> _check)
+		{
+			ulock lk(mtx);
+			cv.wait(lk, _check);
+		}
+
+		void notify_one()
+		{
+			cv.notify_one();
+		}
+
+		void notify_all()
+		{
+			cv.notify_all();
+		}
+	};
 
 	namespace Storage
 	{
@@ -60,33 +93,47 @@ namespace Async
 		{
 		private:
 
-			std::mutex mtx;
+			Semaphore& s;
 			std::deque<T> queue;
 
 		public:
 
+			tsq(Semaphore& _s)
+				:
+				  s(_s)
+			{}
+
 			void push(const T& _t)
 			{
-				glock lk(mtx);
-				queue.push_back(_t);
+				{
+					glock lk(s.mtx);
+					queue.push_back(_t);
+				}
+				s.notify_one();
 			}
 
 			void push(T&& _t)
 			{
-				glock lk(mtx);
-				queue.emplace_back(std::move(_t));
+				{
+					glock lk(s.mtx);
+					queue.emplace_back(std::move(_t));
+				}
+				s.notify_one();
 			}
 
 			template<typename ... Args>
 			void emplace(Args&& ... _args)
 			{
-				glock lk(mtx);
-				queue.emplace_back(std::forward<Args>(_args)...);
+				{
+					glock lk(s.mtx);
+					queue.emplace_back(std::forward<Args>(_args)...);
+				}
+				s.notify_one();
 			}
 
 			bool pop(T& _t)
 			{
-				glock lk(mtx);
+				glock lk(s.mtx);
 				if (queue.empty())
 				{
 					return false;
@@ -98,19 +145,17 @@ namespace Async
 
 			bool is_empty()
 			{
-				glock lk(mtx);
 				return queue.empty();
 			}
 
 			std::size_t size()
 			{
-				glock lk(mtx);
 				return queue.size();
 			}
 
 			void clear()
 			{
-				glock lk(mtx);
+				glock lk(s.mtx);
 				queue.clear();
 			}
 		};
@@ -134,28 +179,35 @@ namespace Async
 		/// Task queue
 		Storage::tsq<std::function<void()>> queue;
 
-		/// Mutex for the condition variables
-		std::mutex mtx;
-
-		/// Condition variable used for signalling
-		/// other threads that the processing has finished.
-		cv finished;
-
-		/// Condition variable for signalling threads to start processing the queues.
-		cv semaphore;
-
 		struct Flags
 		{
+			toggle quit;
 			toggle stop;
 			toggle prune;
 			toggle pause;
 			Flags()
 				:
+				  quit(false),
 				  stop(false),
 				  prune(false),
 				  pause(false)
 			{}
 		} flags;
+
+		struct Semaphores
+		{
+			/// Bell for signalling that the threadpool
+			/// has reached EOL.
+			Semaphore quit;
+
+			/// Bell for signalling threads to start
+			/// processing the queues.
+			Semaphore work;
+
+			/// Bell for signalling that the threadpool
+			/// is waiting for all tasks to finish.
+			Semaphore sync;
+		} semaphores;
 
 		struct Stats
 		{
@@ -175,6 +227,10 @@ namespace Async
 
 		struct Workers
 		{
+			/// Thread bookkeeping
+			mutex busy_mtx;
+			hmap<thread_id, toggle> busy;
+
 			auint count;
 			auint target_count;
 			Workers(const uint _target_count)
@@ -188,15 +244,25 @@ namespace Async
 
 		ThreadPool(const uint _init_count = std::thread::hardware_concurrency())
 			:
-			  workers(_init_count)
+			  workers(_init_count),
+			  semaphores{},
+			  queue(semaphores.work)
 		{
 			resize(_init_count);
 		}
 
 		~ThreadPool() TP_EXCEPT
 		{
-			flags.stop.store(true);
-			wait();
+			sync();
+
+			flags.quit.store(true);
+			workers.target_count.store(0);
+
+			semaphores.work.notify_all();
+			semaphores.quit.wait([&]
+			{
+				return (queue.is_empty() && !stats.assigned && !workers.count);
+			});
 
 			LOG("=====[ Task statistics ]=====",
 			   "\nReceived:\t", stats.received,
@@ -239,8 +305,6 @@ namespace Async
 
 			queue.push([=]{ (*task)(); });
 
-			semaphore.notify_one();
-
 #ifdef TP_BENCH
 			uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
 			enqueue_duration += ns;
@@ -262,7 +326,8 @@ namespace Async
 			flags.prune.store((workers.count > workers.target_count));
 			while (workers.count < workers.target_count)
 			{
-				add_worker().get();
+				thread_id id(add_worker());
+				while(workers.busy[id]);
 			}
 		}
 
@@ -281,16 +346,17 @@ namespace Async
 			/// Empty the queue
 			stats.aborted += queue.size();
 			queue.clear();
+
+			semaphores.sync.notify_all();
 		}
 
-		void wait()
+		void sync()
 		{
-			semaphore.notify_all();
+			semaphores.work.notify_all();
 
 			LOG("Waiting for tasks to finish...")
 
-			ulock lk(mtx);
-			finished.wait(lk, [&]
+			semaphores.sync.wait([&]
 			{
 				return (queue.is_empty() && !stats.assigned);
 			});
@@ -304,7 +370,7 @@ namespace Async
 		void resume()
 		{
 			flags.pause.store(false);
-			semaphore.notify_all();
+			semaphores.work.notify_all();
 		}
 
 		uint worker_count()
@@ -334,32 +400,38 @@ namespace Async
 
 	private:
 
-		std::future<void> add_worker()
+		thread_id add_worker()
 		{
-			std::promise<void> ready_promise;
-			std::future<void> ready(ready_promise.get_future());
+			std::promise<thread_id> ready_promise;
+			std::future<thread_id> id(ready_promise.get_future());
+
 			std::thread([&,rp = std::move(ready_promise)]() mutable
 			{
 				std::function<void()> task;
 
-				uint worker_id(++workers.count);
-				LOG("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " ready");
+				uint count(++workers.count);
+				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " ready");
 
-				rp.set_value();
+				{
+					glock lk(workers.busy_mtx);
+					workers.busy[std::this_thread::get_id()] = true;
+				}
+
+				auto& busy(workers.busy[std::this_thread::get_id()]);
+				rp.set_value(std::this_thread::get_id());
 
 				while (true)
 				{
+					/// Block execution until we have something to process.
+					semaphores.work.wait([&]
 					{
-						ulock lk(mtx);
+						busy.store(false);
+						return flags.quit || flags.stop || flags.prune || !flags.pause || !queue.is_empty();
+					});
+					busy.store(true);
 
-						/// Block execution until we have something to process.
-						semaphore.wait(lk, [&]
-						{
-							return flags.stop || flags.prune || !flags.pause || !queue.is_empty();
-						});
-					}
-
-					if (flags.prune ||
+					if (flags.quit ||
+						flags.prune ||
 						(flags.stop &&
 						 queue.is_empty()))
 					{
@@ -387,18 +459,30 @@ namespace Async
 					{
 						LOG("Signalling that all tasks have been processed...")
 
-						finished.notify_all();
+						semaphores.sync.notify_all();
 					}
 				}
+
+				busy.store(false);
 
 				--workers.count;
 				flags.prune.store(workers.count > workers.target_count);
 
-				LOG("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " exiting...")
+				{
+					glock lk(workers.busy_mtx);
+					workers.busy.erase(std::this_thread::get_id());
+				}
+
+				if (!workers.count)
+				{
+					semaphores.quit.notify_one();
+				}
+
+				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " exiting...")
 
 			}).detach();
 
-			return ready;
+			return id.get();
 		}
 
 		template <class T>
