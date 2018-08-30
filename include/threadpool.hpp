@@ -11,7 +11,7 @@
 #include <iostream>
 
 #ifdef TP_DEBUG
-#define LOG(...)	{ Debug::log( __VA_ARGS__ ); }
+#define LOG(...) Debug::log( __VA_ARGS__ );
 #else
 #define LOG(...)
 #endif
@@ -260,12 +260,9 @@ namespace Async
 
 			workers.target_count.store(_count);
 			flags.prune.store((workers.count > workers.target_count));
-			if (workers.count < workers.target_count)
+			while (workers.count < workers.target_count)
 			{
-				for (uint i = 0; i < workers.target_count - workers.count; ++i)
-				{
-					add_worker();
-				}
+				add_worker().get();
 			}
 		}
 
@@ -337,14 +334,18 @@ namespace Async
 
 	private:
 
-		void add_worker()
+		std::future<void> add_worker()
 		{
-			std::thread([&]
+			std::promise<void> ready_promise;
+			std::future<void> ready(ready_promise.get_future());
+			std::thread([&,rp = std::move(ready_promise)]() mutable
 			{
 				std::function<void()> task;
 
 				uint worker_id(++workers.count);
-				LOG("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " ready")
+				LOG("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " ready");
+
+				rp.set_value();
 
 				while (true)
 				{
@@ -396,6 +397,8 @@ namespace Async
 				LOG("\tWorker ", worker_id, " in thread ", std::this_thread::get_id(), " exiting...")
 
 			}).detach();
+
+			return ready;
 		}
 
 		template <class T>
