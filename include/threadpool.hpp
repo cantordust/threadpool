@@ -10,6 +10,7 @@
 #include <functional>
 #include <iostream>
 #include <unordered_map>
+#include <memory>
 
 #ifdef TP_DEBUG
 #define LOG(...) Debug::log( __VA_ARGS__ );
@@ -28,6 +29,7 @@ namespace Async
 	using uint = unsigned int;
 	using auint = std::atomic<uint>;
 	using toggle = std::atomic<bool>;
+	using flag = std::atomic_flag;
 	using mutex = std::mutex;
 	using cvar = std::condition_variable;
 	using thread_id = std::thread::id;
@@ -35,6 +37,7 @@ namespace Async
 	using glock = std::lock_guard<mutex>;
 	template<typename T1, typename T2>
 	using hmap = std::unordered_map<T1, T2>;
+	using Task = std::function<void()>;
 
 	///=============================================================================
 	///	Debug printing
@@ -42,7 +45,7 @@ namespace Async
 
 	namespace Debug
 	{
-		static mutex cout_mutex;
+		inline mutex cout_mutex;
 
 		/// Rudimentary debug printing.
 		template<typename ... Args>
@@ -84,6 +87,24 @@ namespace Async
 
 	namespace Storage
 	{
+		/// Experimental spinlock.
+		struct slock
+		{
+			flag& f;
+
+			slock(flag& _f) noexcept
+				:
+				  f(_f)
+			{
+				while(f.test_and_set(std::memory_order_acquire));
+			}
+
+			~slock() noexcept
+			{
+				f.clear(std::memory_order_release);
+			}
+		};
+
 		///=====================================
 		/// Thread-safe queue
 		///=====================================
@@ -93,6 +114,7 @@ namespace Async
 		{
 		private:
 
+			flag f = ATOMIC_FLAG_INIT;
 			Semaphore& s;
 			std::deque<T> queue;
 
@@ -105,35 +127,29 @@ namespace Async
 
 			void push(const T& _t)
 			{
-				{
-					glock lk(s.mtx);
-					queue.push_back(_t);
-				}
+				slock lk(f);
+				queue.push_back(_t);
 				s.notify_one();
 			}
 
 			void push(T&& _t)
 			{
-				{
-					glock lk(s.mtx);
-					queue.emplace_back(std::move(_t));
-				}
+				slock lk(f);
+				queue.emplace_back(std::move(_t));
 				s.notify_one();
 			}
 
 			template<typename ... Args>
 			void emplace(Args&& ... _args)
 			{
-				{
-					glock lk(s.mtx);
-					queue.emplace_back(std::forward<Args>(_args)...);
-				}
+				slock lk(f);
+				queue.emplace_back(std::forward<Args>(_args)...);
 				s.notify_one();
 			}
 
 			bool pop(T& _t)
 			{
-				glock lk(s.mtx);
+				slock lk(f);
 				if (queue.empty())
 				{
 					return false;
@@ -145,17 +161,13 @@ namespace Async
 
 			bool is_empty()
 			{
+				slock lk(f);
 				return queue.empty();
-			}
-
-			std::size_t size()
-			{
-				return queue.size();
 			}
 
 			void clear()
 			{
-				glock lk(s.mtx);
+				slock lk(f);
 				queue.clear();
 			}
 		};
@@ -177,17 +189,15 @@ namespace Async
 	private:
 
 		/// Task queue
-		Storage::tsq<std::function<void()>> queue;
+		Storage::tsq<Task> queue;
 
 		struct Flags
 		{
-			toggle quit;
 			toggle stop;
 			toggle prune;
 			toggle pause;
 			Flags()
 				:
-				  quit(false),
 				  stop(false),
 				  prune(false),
 				  pause(false)
@@ -196,10 +206,6 @@ namespace Async
 
 		struct Semaphores
 		{
-			/// Bell for signalling that the threadpool
-			/// has reached EOL.
-			Semaphore quit;
-
 			/// Bell for signalling threads to start
 			/// processing the queues.
 			Semaphore work;
@@ -212,6 +218,7 @@ namespace Async
 		struct Stats
 		{
 			auint received;
+			auint enqueued;
 			auint assigned;
 			auint completed;
 			auint aborted;
@@ -219,6 +226,7 @@ namespace Async
 			Stats()
 				:
 				  received(0),
+				  enqueued(0),
 				  assigned(0),
 				  completed(0),
 				  aborted(0)
@@ -253,19 +261,18 @@ namespace Async
 
 		~ThreadPool() TP_EXCEPT
 		{
+			LOG("Destroying ThreadPool...");
+
+			/// Indicate that the threadpool has reached EOL.
+			flags.stop.store(true);
 			sync();
 
-			flags.quit.store(true);
-			workers.target_count.store(0);
+			/// Spin until all workers have exited.
+			while (workers.count);
 
-			semaphores.work.notify_all();
-			semaphores.quit.wait([&]
-			{
-				return (queue.is_empty() && !stats.assigned && !workers.count);
-			});
-
-			LOG("=====[ Task statistics ]=====",
+			LOG("\n==========[ Task statistics ]===========",
 			   "\nReceived:\t", stats.received,
+			   "\nEnqueued:\t", stats.enqueued,
 			   "\nAssigned:\t", stats.assigned,
 			   "\nCompleted:\t", stats.completed,
 			   "\nAborted:\t", stats.aborted,
@@ -301,16 +308,16 @@ namespace Async
 				return future;
 			}
 
+			queue.emplace([=]{ (*task)(); });
 			++stats.received;
-
-			queue.push([=]{ (*task)(); });
+			++stats.enqueued;
 
 #ifdef TP_BENCH
 			uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
 			enqueue_duration += ns;
 			Debug::log("Enqueue took ", ns, " ns");
 #endif
-			LOG("New task received (Received: ", stats.received, ", enqueued: ", queue.size(), ")")
+			LOG("New task received (Received: ", stats.received, ", enqueued: ", stats.enqueued, ")")
 
 			return future;
 		}
@@ -344,7 +351,8 @@ namespace Async
 			flags.stop.store(true);
 
 			/// Empty the queue
-			stats.aborted += queue.size();
+			stats.aborted += stats.enqueued;
+			stats.enqueued.store(0);
 			queue.clear();
 
 			semaphores.sync.notify_all();
@@ -358,7 +366,7 @@ namespace Async
 
 			semaphores.sync.wait([&]
 			{
-				return (queue.is_empty() && !stats.assigned);
+				return !stats.enqueued;
 			});
 		}
 
@@ -379,6 +387,11 @@ namespace Async
 		}
 
 		uint tasks_enqueued()
+		{
+			return stats.enqueued;
+		}
+
+		uint tasks_assigned()
 		{
 			return stats.assigned;
 		}
@@ -407,7 +420,7 @@ namespace Async
 
 			std::thread([&,rp = std::move(ready_promise)]() mutable
 			{
-				std::function<void()> task;
+				Task task;
 
 				uint count(++workers.count);
 				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " ready");
@@ -420,63 +433,59 @@ namespace Async
 				auto& busy(workers.busy[std::this_thread::get_id()]);
 				rp.set_value(std::this_thread::get_id());
 
+				busy.store(false);
+
 				while (true)
 				{
+
 					/// Block execution until we have something to process.
 					semaphores.work.wait([&]
 					{
-						busy.store(false);
-						return flags.quit || flags.stop || flags.prune || !flags.pause || !queue.is_empty();
+						busy.store(queue.pop(task));
+						LOG("Thread ", std::this_thread::get_id(), " waiting for work.");
+						return (busy || flags.stop || flags.prune || !flags.pause);
 					});
-					busy.store(true);
 
-					if (flags.quit ||
-						flags.prune ||
-						(flags.stop &&
-						 queue.is_empty()))
-					{
-						break;
-					}
-
-					if (queue.pop(task))
+					if (busy)
 					{
 						/// Update the stats
 						++stats.assigned;
+						--stats.enqueued;
 
-						LOG(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)")
+						LOG(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)")
 
 						/// Execute the task
 						task();
+
+						busy.store(false);
 
 						/// Update the stats
 						--stats.assigned;
 						++stats.completed;
 
-						LOG(stats.assigned, " task(s) assigned (", queue.size(), " enqueued)")
-					}
+						LOG(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)");
 
-					if (!stats.assigned)
+						if (!stats.enqueued)
+						{
+							LOG("Signalling that all tasks have been processed...");
+							semaphores.sync.notify_all();
+						}
+					}
+					else if (flags.prune ||
+							 flags.stop)
 					{
-						LOG("Signalling that all tasks have been processed...")
-
-						semaphores.sync.notify_all();
+						break;
 					}
+
 				}
-
-				busy.store(false);
-
-				--workers.count;
-				flags.prune.store(workers.count > workers.target_count);
 
 				{
 					glock lk(workers.busy_mtx);
 					workers.busy.erase(std::this_thread::get_id());
 				}
 
-				if (!workers.count)
-				{
-					semaphores.quit.notify_one();
-				}
+				--workers.count;
+				flags.prune.store(workers.count > workers.target_count);
 
 				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " exiting...")
 
