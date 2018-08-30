@@ -180,11 +180,14 @@ namespace Async
 	/// @class Threadpool
 	class ThreadPool
 	{
+	public:
 
 #ifdef TP_BENCH
-	public:
 		uint enqueue_duration = 0;
 #endif
+
+		/// Version string.
+		inline static const std::string version{"0.2.6"};
 
 	private:
 
