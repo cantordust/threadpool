@@ -52,11 +52,11 @@ namespace Async
 	namespace Storage
 	{
 		///=====================================
-		/// Lock-free queue
+		/// Thread-safe queue
 		///=====================================
 
 		template<typename T>
-		class lfq
+		class tsq
 		{
 		private:
 
@@ -132,7 +132,7 @@ namespace Async
 	private:
 
 		/// Task queue
-		Storage::lfq<std::function<void()>> queue;
+		Storage::tsq<std::function<void()>> queue;
 
 		/// Mutex for the condition variables
 		std::mutex mtx;
