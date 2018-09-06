@@ -37,7 +37,10 @@ namespace Async
 	using glock = std::lock_guard<mutex>;
 	template<typename T1, typename T2>
 	using hmap = std::unordered_map<T1, T2>;
-	using Task = std::function<void()>;
+	using nsec = std::chrono::nanoseconds;
+	using usec = std::chrono::microseconds;
+	using msec = std::chrono::milliseconds;
+	using clk = std::chrono::high_resolution_clock;
 
 	///=============================================================================
 	///	Debug printing
@@ -57,36 +60,90 @@ namespace Async
 		}
 	}
 
+	template<typename T>
+	static inline constexpr uint duration(const std::chrono::high_resolution_clock::time_point& _start)
+	{
+		return std::chrono::duration_cast<T>(std::chrono::high_resolution_clock::now() - _start).count();
+	}
+
 	struct Semaphore
 	{
+		toggle spurious{true};
 		mutex mtx;
 		cvar cv;
 
 		void wait()
 		{
+			spurious.store(true);
 			ulock lk(mtx);
-			cv.wait(lk);
+			cv.wait(lk, [&]{ return !spurious; });
 		}
 
-		void wait(std::function<bool()> _check)
+		template<typename T>
+		void wait(T&& _check)
 		{
+			spurious.store(true);
 			ulock lk(mtx);
-			cv.wait(lk, _check);
+			cv.wait(lk, [&, check = std::forward<T>(_check)]{ return (!spurious || check()); });
 		}
 
 		void notify_one()
 		{
+			spurious.store(false);
 			cv.notify_one();
 		}
 
 		void notify_all()
 		{
+			spurious.store(false);
 			cv.notify_all();
 		}
 	};
 
 	namespace Storage
 	{
+		///=====================================
+		/// Task base and executor
+		///=====================================
+
+		struct TaskBase
+		{
+			virtual ~TaskBase() {};
+			virtual void operator()() = 0;
+		};
+
+		using TaskPtr = std::unique_ptr<TaskBase>;
+
+		template<typename F, typename Ret, typename ... Args>
+		struct TaskExecutor : TaskBase
+		{
+			std::function<Ret(Args&&...)> func;
+			std::promise<Ret> promise;
+			std::tuple<Args&& ...> args;
+
+			constexpr TaskExecutor(F&& _f, std::promise<Ret>&& _promise, Args&& ... _args)
+				:
+				  func(std::forward<F>(_f)),
+				  promise(std::move(_promise)),
+				  args(std::forward_as_tuple<Args>(_args)...)
+			{}
+
+			virtual ~TaskExecutor() {};
+
+			virtual void operator()() override final
+			{
+				if constexpr (std::is_void<Ret>::value)
+				{
+					std::apply(func, args);
+					promise.set_value();
+				}
+				else
+				{
+					promise.set_value(std::apply(func, args));
+				}
+			}
+		};
+
 		/// Experimental spinlock.
 		struct slock
 		{
@@ -112,7 +169,7 @@ namespace Async
 		template<typename T>
 		class tsq
 		{
-		private:
+		protected:
 
 			flag f = ATOMIC_FLAG_INIT;
 			Semaphore& s;
@@ -171,6 +228,22 @@ namespace Async
 				queue.clear();
 			}
 		};
+
+		class TaskQueue : public tsq<TaskPtr>
+		{
+
+		public:
+
+			using tsq<TaskPtr>::tsq;
+
+			template<typename F, typename Ret, typename ... Args>
+			void emplace(F&& _f, std::promise<Ret>&& _promise, Args&& ... _args)
+			{
+				slock lk(f);
+				queue.emplace_back(std::make_unique<TaskExecutor<F, Ret, Args...>>(std::forward<F>(_f), std::move(_promise), std::forward<Args>(_args)...));
+				s.notify_one();
+			}
+		};
 	}
 
 	///=============================================================================
@@ -187,12 +260,12 @@ namespace Async
 #endif
 
 		/// Version string.
-		inline static const std::string version{"0.2.6"};
+		inline static const std::string version{"0.2.6.7"};
 
 	private:
 
 		/// Task queue
-		Storage::tsq<Task> queue;
+		Storage::TaskQueue queue;
 
 		struct Flags
 		{
@@ -292,33 +365,39 @@ namespace Async
 		}
 
 		template<typename F, typename ... Args>
-		auto enqueue(F&& _f, Args&&... _args)
+		auto enqueue(F&& _f, Args&&... _args) -> std::future<typename std::invoke_result<F, Args...>::type>
 		{
-			using Ret = typename std::result_of<F& (Args&...)>::type;
+			using Ret = typename std::invoke_result<F, Args...>::type;
 
 #ifdef TP_BENCH
-			auto start(std::chrono::high_resolution_clock::now());
+			auto start(clk::now());
 #endif
 
-			/// Using a conditional wrapper to avoid dangling references.
-			/// Courtesy of https://stackoverflow.com/a/46565491/4639195.
-			auto task(std::make_shared<std::packaged_task<Ret()>>(std::bind(std::forward<F>(_f), wrap(std::forward<Args>(_args))...)));
-
-			std::future<Ret> future(task->get_future());
+			std::promise<Ret> promise;
+			std::future<Ret> future(promise.get_future());
 
 			if (flags.stop)
 			{
+				if constexpr (std::is_void<Ret>::value)
+				{
+					promise.set_value();
+				}
+				else
+				{
+					promise.set_value(Ret());
+				}
 				return future;
 			}
 
-			queue.emplace([=]{ (*task)(); });
 			++stats.received;
 			++stats.enqueued;
 
+			queue.emplace(std::forward<F>(_f), std::move(promise), std::forward<Args>(_args)...);
+
 #ifdef TP_BENCH
-			uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
-			enqueue_duration += ns;
-			Debug::log("Enqueue took ", ns, " ns");
+			uint timespan(duration<nsec>(start));
+			enqueue_duration += timespan;
+			Debug::log("Enqueue took ", timespan, " ns");
 #endif
 			LOG("New task received (Received: ", stats.received, ", enqueued: ", stats.enqueued, ")")
 
@@ -423,7 +502,7 @@ namespace Async
 
 			std::thread([&,rp = std::move(ready_promise)]() mutable
 			{
-				Task task;
+				Storage::TaskPtr task(nullptr);
 
 				uint count(++workers.count);
 				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " ready");
@@ -440,7 +519,6 @@ namespace Async
 
 				while (true)
 				{
-
 					/// Block execution until we have something to process.
 					semaphores.work.wait([&]
 					{
@@ -458,7 +536,7 @@ namespace Async
 						LOG(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)")
 
 						/// Execute the task
-						task();
+						(*task)();
 
 						busy.store(false);
 
@@ -479,7 +557,6 @@ namespace Async
 					{
 						break;
 					}
-
 				}
 
 				{
@@ -495,18 +572,6 @@ namespace Async
 			}).detach();
 
 			return id.get();
-		}
-
-		template <class T>
-		std::reference_wrapper<T> wrap(T& val)
-		{
-			return std::ref(val);
-		}
-
-		template <class T>
-		T&&	wrap(T&& val)
-		{
-			return std::forward<T>(val);
 		}
 	};
 }

@@ -53,7 +53,7 @@ std::string string_void()
 	return std::to_string(sleep);
 }
 
-void void_uint(const uint _num)
+void void_uint(uint& _num)
 {
 	static auint call_count{0};
 	uint tl_count(++call_count);
@@ -164,8 +164,8 @@ int main(void)
 		log("(main) Destroying ThreadPool...");
 
 #ifdef TP_BENCH
-		enqueue_duration += static_cast<double>(tp.enqueue_duration);
-		total_tasks += static_cast<double>(tp.tasks_received());
+		enqueue_duration += tp.enqueue_duration;
+		total_tasks += tp.tasks_received();
 #endif
 
 	}
