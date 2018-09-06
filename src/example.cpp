@@ -25,20 +25,20 @@ void void_void()
 {
 	static auint call_count{0};
 	uint tl_count(++call_count);
-	DLOG("\tvoid void_void() call # ", tl_count);
+	LOG("\tvoid void_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	DLOG("\tvoid void_void() # ", tl_count, " exiting...");
+	LOG("\tvoid void_void() # ", tl_count, " exiting...");
 }
 
 uint uint_void()
 {
 	static auint call_count{0};
 	uint tl_count(++call_count);
-	DLOG("\tuint uint_void() call # ", tl_count);
+	LOG("\tuint uint_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	DLOG("\tuint uint_void() # ", tl_count, "  exiting...");
+	LOG("\tuint uint_void() # ", tl_count, "  exiting...");
 	return sleep;
 }
 
@@ -46,10 +46,10 @@ std::string string_void()
 {
 	static auint call_count{0};
 	uint tl_count(++call_count);
-	DLOG("\tstd::string string_void() call # ", tl_count);
+	LOG("\tstd::string string_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	DLOG("\tstd::string string_void() # ", tl_count, "  exiting...");
+	LOG("\tstd::string string_void() # ", tl_count, "  exiting...");
 	return std::to_string(sleep);
 }
 
@@ -57,10 +57,10 @@ void void_uint(const uint _num)
 {
 	static auint call_count{0};
 	uint tl_count(++call_count);
-	DLOG("\tvoid void_uint(const uint) call # ", tl_count);
+	LOG("\tvoid void_uint(const uint) call # ", tl_count);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	DLOG("\tvoid void_uint(const uint _num) # ", tl_count, " exiting...");
+	LOG("\tvoid void_uint(const uint _num) # ", tl_count, " exiting...");
 }
 
 void schedule(ThreadPool& _tp, const uint _tasks)
@@ -108,7 +108,6 @@ int main(void)
 	uint iterations(10);
 	uint runs(10);
 
-
 #ifdef TP_BENCH
 	double enqueue_duration(0.0);
 	double total_tasks(0.0);
@@ -127,7 +126,7 @@ int main(void)
 			schedule(tp, (tasks = d_tasks(rng)));
 
 			/// Synchronise
-			tp.wait();
+			tp.sync();
 			log("(main) Tasks completed.");
 
 			workers = d_workers(rng);
@@ -158,7 +157,7 @@ int main(void)
 			}
 
 			/// Synchronise
-			tp.wait();
+			tp.sync();
 			log("(main) Tasks completed.");
 		}
 
