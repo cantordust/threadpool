@@ -23,7 +23,7 @@ uint rnd_sleep()
 
 void void_void()
 {
-	static auint call_count{0};
+	static auint call_count(0);
 	uint tl_count(++call_count);
 	LOG("\tvoid void_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
@@ -33,7 +33,7 @@ void void_void()
 
 uint uint_void()
 {
-	static auint call_count{0};
+	static auint call_count(0);
 	uint tl_count(++call_count);
 	LOG("\tuint uint_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
@@ -44,7 +44,7 @@ uint uint_void()
 
 std::string string_void()
 {
-	static auint call_count{0};
+	static auint call_count(0);
 	uint tl_count(++call_count);
 	LOG("\tstd::string string_void() call # ", tl_count);
 	uint sleep(rnd_sleep());
@@ -53,17 +53,24 @@ std::string string_void()
 	return std::to_string(sleep);
 }
 
-void void_uint(uint& _num)
+void void_uint(auint& _reference)
 {
-	static auint call_count{0};
+	static auint call_count(0);
 	uint tl_count(++call_count);
-	LOG("\tvoid void_uint(const uint) call # ", tl_count);
+	LOG("\tvoid void_uint(uint&) call # ", tl_count);
+	LOG("\tvoid void_uint(uint&) reference is ", ++_refererence);
 	uint sleep(rnd_sleep());
 	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
 	LOG("\tvoid void_uint(const uint _num) # ", tl_count, " exiting...");
 }
 
-void schedule(ThreadPool& _tp, const uint _tasks)
+template<typename T>
+void print(T&& _t)
+{
+	LOG("\tValue is ready: ", _t);
+}
+
+void schedule(ThreadPool& _tp, const uint _tasks, auint& _reference)
 {
 	for (uint t = 1; t <= _tasks; ++t)
 	{
@@ -77,21 +84,19 @@ void schedule(ThreadPool& _tp, const uint _tasks)
 
 		case 1:
 			{
-				auto future(_tp.enqueue(&uint_void));
-//				LOG("\tCase 1: ", future.get());
+				_tp.enqueue(&uint_void);
 				break;
 			}
 
 		case 2:
 			{
-				auto future(_tp.enqueue(&string_void));
-//				LOG("\tCase 2: ", future.get());
+				_tp.enqueue(&string_void);
 				break;
 			}
 
 		case 3:
 			{
-				_tp.enqueue(&void_uint, t);
+				_tp.enqueue(&void_uint, _reference);
 				break;
 			}
 		}
@@ -118,12 +123,15 @@ int main(void)
 		log("\n===============[ Iteration ", it, "/", iterations, " ]===============\n");
 
 		uint workers(std::thread::hardware_concurrency());
+
+		auint reference(0);
+
 		ThreadPool tp(workers);
 
 		for (uint run = 0; run < runs; ++run)
 		{
 			log("(main) Scheduling ", tasks, " task(s).");
-			schedule(tp, (tasks = d_tasks(rng)));
+			schedule(tp, (tasks = d_tasks(rng)), reference);
 
 			/// Synchronise
 			tp.sync();
@@ -135,7 +143,7 @@ int main(void)
 			tp.resize(workers);
 
 			log("(main) Scheduling ", tasks, " task(s).");
-			schedule(tp, (tasks = d_tasks(rng)));
+			schedule(tp, (tasks = d_tasks(rng)), reference);
 
 			if (d_stop(rng) < 0.1)
 			{

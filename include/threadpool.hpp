@@ -12,6 +12,10 @@
 #include <unordered_map>
 #include <memory>
 
+#ifdef TP_BENCH
+#include <chrono>
+#endif
+
 #ifdef TP_DEBUG
 #define LOG(...) Debug::log( __VA_ARGS__ );
 #else
@@ -26,21 +30,52 @@
 
 namespace Async
 {
+	///=============================================================================
+	///	Aliases
+	///=============================================================================
+
+	///=====================================
+	/// Atomic types
+	///=====================================
 	using uint = unsigned int;
 	using auint = std::atomic<uint>;
-	using toggle = std::atomic<bool>;
-	using flag = std::atomic_flag;
+	using flag = std::atomic<bool>;
+
+	///=====================================
+	/// Synchronisation	types
+	///=====================================
+	/// Ordinary mutex
 	using mutex = std::mutex;
+	/// Lock-free mutex
+	using LFMutex = std::atomic_flag;
 	using cvar = std::condition_variable;
-	using thread_id = std::thread::id;
 	using ulock = std::unique_lock<mutex>;
 	using glock = std::lock_guard<mutex>;
+
+	///=====================================
+	/// Hashmap and thread ID
+	///=====================================
 	template<typename T1, typename T2>
 	using hmap = std::unordered_map<T1, T2>;
+	using thread_id = std::thread::id;
+
+#ifdef TP_BENCH
+	///=====================================
+	/// Time-related types
+	///=====================================
 	using nsec = std::chrono::nanoseconds;
 	using usec = std::chrono::microseconds;
 	using msec = std::chrono::milliseconds;
 	using clk = std::chrono::high_resolution_clock;
+#endif
+
+	///=====================================
+	/// Smart pointers
+	///=====================================
+	template<typename T>
+	using sp = std::shared_ptr<T>;
+	template<typename T>
+	using up = std::unique_ptr<T>;
 
 	///=============================================================================
 	///	Debug printing
@@ -60,138 +95,166 @@ namespace Async
 		}
 	}
 
+#ifdef TP_BENCH
+
+	///=============================================================================
+	///	Time-related functions
+	///=============================================================================
+
 	template<typename T>
 	static inline constexpr uint duration(const std::chrono::high_resolution_clock::time_point& _start)
 	{
 		return std::chrono::duration_cast<T>(std::chrono::high_resolution_clock::now() - _start).count();
 	}
 
-	struct Semaphore
-	{
-		toggle spurious{true};
-		mutex mtx;
-		cvar cv;
+#endif
 
-		void wait()
-		{
-			spurious.store(true);
-			ulock lk(mtx);
-			cv.wait(lk, [&]{ return !spurious; });
-		}
-
-		template<typename T>
-		void wait(T&& _check)
-		{
-			spurious.store(true);
-			ulock lk(mtx);
-			cv.wait(lk, [&, check = std::forward<T>(_check)]{ return (!spurious || check()); });
-		}
-
-		void notify_one()
-		{
-			spurious.store(false);
-			cv.notify_one();
-		}
-
-		void notify_all()
-		{
-			spurious.store(false);
-			cv.notify_all();
-		}
-	};
-
-	namespace Storage
+	namespace Sync
 	{
 		///=====================================
-		/// Task base and executor
+		/// A generic semaphore / mutex class.
+		/// It can wait on arbitrary conditions
+		/// and ignores spurious wake-ups.
 		///=====================================
-
-		struct TaskBase
+		struct Semaphore
 		{
-			virtual ~TaskBase() {};
-			virtual void operator()() = 0;
-		};
+			flag spurious{true};
+			mutex mtx;
+			cvar cv;
 
-		using TaskPtr = std::unique_ptr<TaskBase>;
-
-		template<typename F, typename Ret, typename ... Args>
-		struct TaskExecutor : TaskBase
-		{
-			std::function<Ret(Args&&...)> func;
-			std::promise<Ret> promise;
-			std::tuple<Args&& ...> args;
-
-			constexpr TaskExecutor(F&& _f, std::promise<Ret>&& _promise, Args&& ... _args)
-				:
-				  func(std::forward<F>(_f)),
-				  promise(std::move(_promise)),
-				  args(std::forward_as_tuple<Args>(_args)...)
-			{}
-
-			virtual ~TaskExecutor() {};
-
-			virtual void operator()() override final
+			void wait()
 			{
-				if constexpr (std::is_void<Ret>::value)
-				{
-					std::apply(func, args);
-					promise.set_value();
-				}
-				else
-				{
-					promise.set_value(std::apply(func, args));
-				}
+				spurious.store(true);
+				ulock lk(mtx);
+				cv.wait(lk, [&]{ return !spurious; });
+			}
+
+			template<typename T>
+			void wait(T&& _check)
+			{
+				spurious.store(true);
+				ulock lk(mtx);
+				cv.wait(lk, [&, check = std::forward<T>(_check)]{ return (!spurious || check()); });
+			}
+
+			void notify_one()
+			{
+				spurious.store(false);
+				cv.notify_one();
+			}
+
+			void notify_all()
+			{
+				spurious.store(false);
+				cv.notify_all();
 			}
 		};
 
-		/// Experimental spinlock.
-		struct slock
+		///=====================================
+		/// Lock-free mutex (spinlock).
+		///=====================================
+		struct LFLock
 		{
-			flag& f;
+			LFMutex& f;
 
-			slock(flag& _f) noexcept
+			LFLock(LFMutex& _f) noexcept
 				:
 				  f(_f)
 			{
 				while(f.test_and_set(std::memory_order_acquire));
 			}
 
-			~slock() noexcept
+			~LFLock() noexcept
 			{
 				f.clear(std::memory_order_release);
 			}
 		};
+	}
+
+	namespace Storage
+	{
+		using Sync::LFLock;
+		using Sync::Semaphore;
 
 		///=====================================
-		/// Thread-safe queue
+		/// Thread-safe hashmap.
 		///=====================================
-
-		template<typename T>
-		class tsq
+		template<typename K, typename V>
+		class TSTable
 		{
 		protected:
 
-			flag f = ATOMIC_FLAG_INIT;
+			LFMutex mtx = ATOMIC_FLAG_INIT;
+			hmap<K, V> table;
+
+		public:
+
+			template<typename Key>
+			auto operator [](Key&& _key) -> decltype (auto)
+			{
+				LFLock lk(mtx);
+				return table[std::forward<Key>(_key)];
+
+			}
+			template<typename Key>
+			auto erase(Key&& _key) -> decltype (auto)
+			{
+				LFLock lk(mtx);
+				return table.erase(std::forward<Key>(_key));
+			}
+
+			bool has(const K& _k) const
+			{
+				LFLock lk(mtx);
+				return table.find(_k) != table.end();
+			}
+
+			bool is_empty() const
+			{
+				LFLock lk(mtx);
+				return table.empty();
+			}
+
+			void clear()
+			{
+				LFLock lk(mtx);
+				table.clear();
+			}
+		};
+
+		///=====================================
+		/// Thread-safe queue.
+		/// This is event-driven in the sense
+		/// that it notifies one thread waiting
+		/// on the condition variable when a
+		/// new entry is inserted.
+		///=====================================
+		template<typename T>
+		class TSQueue
+		{
+		protected:
+
+			LFMutex mtx = ATOMIC_FLAG_INIT;
 			Semaphore& s;
 			std::deque<T> queue;
 
 		public:
 
-			tsq(Semaphore& _s)
+			TSQueue(Semaphore& _s)
 				:
 				  s(_s)
 			{}
 
 			void push(const T& _t)
 			{
-				slock lk(f);
+				LFLock lk(mtx);
 				queue.push_back(_t);
 				s.notify_one();
 			}
 
 			void push(T&& _t)
 			{
-				slock lk(f);
+				LFLock lk(mtx);
 				queue.emplace_back(std::move(_t));
 				s.notify_one();
 			}
@@ -199,14 +262,14 @@ namespace Async
 			template<typename ... Args>
 			void emplace(Args&& ... _args)
 			{
-				slock lk(f);
+				LFLock lk(mtx);
 				queue.emplace_back(std::forward<Args>(_args)...);
 				s.notify_one();
 			}
 
 			bool pop(T& _t)
 			{
-				slock lk(f);
+				LFLock lk(mtx);
 				if (queue.empty())
 				{
 					return false;
@@ -216,34 +279,19 @@ namespace Async
 				return true;
 			}
 
-			bool is_empty()
+			bool is_empty() const
 			{
-				slock lk(f);
+				LFLock lk(mtx);
 				return queue.empty();
 			}
 
 			void clear()
 			{
-				slock lk(f);
+				LFLock lk(mtx);
 				queue.clear();
 			}
 		};
 
-		class TaskQueue : public tsq<TaskPtr>
-		{
-
-		public:
-
-			using tsq<TaskPtr>::tsq;
-
-			template<typename F, typename Ret, typename ... Args>
-			void emplace(F&& _f, std::promise<Ret>&& _promise, Args&& ... _args)
-			{
-				slock lk(f);
-				queue.emplace_back(std::make_unique<TaskExecutor<F, Ret, Args...>>(std::forward<F>(_f), std::move(_promise), std::forward<Args>(_args)...));
-				s.notify_one();
-			}
-		};
 	}
 
 	///=============================================================================
@@ -260,75 +308,281 @@ namespace Async
 #endif
 
 		/// Version string.
-		inline static const std::string version{"0.2.6.7"};
+		inline static const std::string version{"0.2.6.12"};
+
+		///=====================================
+		/// Promise wrapper with validity indicator.
+		///=====================================
+		template<typename T, typename std::enable_if<std::is_default_constructible<T>::value>::type ...>
+		class Promise
+		{
+		private:
+
+			/// No synchronisation needed.
+			/// This is stored as a read-only
+			/// reference in the corresponding
+			/// future, and reading happens
+			/// after setting the promised value.
+			bool invalid{false};
+
+			bool done{false};
+
+			std::promise<T> promise;
+
+		public:
+
+			Promise() {}
+
+			Promise(std::promise<T>&& _promise)
+				:
+				  promise(std::move(_promise))
+			{}
+
+			~Promise()
+			{
+				if (!done)
+				{
+					set();
+				}
+			}
+
+			void invalidate()
+			{
+				invalid = true;
+				if constexpr (std::is_void<T>::value)
+				{
+					promise.set_value();
+				}
+				else
+				{
+					promise.set(T());
+				}
+				done = true;
+			}
+
+			template<typename Result>
+			void set(Result&& _result)
+			{
+				if constexpr (std::is_void<T>::value)
+				{
+					promise.set_value();
+				}
+				else
+				{
+					promise.set(std::forward<Result>(_result));
+				}
+				done = true;
+			}
+
+			std::future<T> get_future()
+			{
+				return promise.get_future();
+			}
+		};
+
+		///=====================================
+		/// Future wrapper with validity indicator.
+		///=====================================
+		template<typename T>
+		class Future
+		{
+		private:
+
+			const bool& invalid;
+			const bool& done;
+			std::future<T> future;
+
+		public:
+
+			Future(const Promise<T>& _p)
+				:
+				  future(_p.promise.get_future()),
+				  invalid(_p.invalid),
+				  done(_p.done)
+			{}
+		};
+
+		///=====================================
+		/// Task base and executor
+		///=====================================
+		class TaskBase : public std::enable_shared_from_this<TaskBase>
+		{
+		public:
+
+			using TaskPtr = sp<TaskBase>;
+			using LFLock = Sync::LFLock;
+
+		protected:
+
+			ThreadPool& tp;
+
+			flag done{false};
+
+			LFMutex mtx = ATOMIC_FLAG_INIT;
+
+			TaskPtr followup{nullptr};
+
+		protected:
+
+			TaskBase(ThreadPool& _tp)
+				:
+				  tp(_tp)
+			{}
+
+		public:
+
+			virtual ~TaskBase() {};
+			virtual void run() = 0;
+
+			template<typename Func, typename ... Args>
+			void chain(Func&& _func, Args&& ... _args)
+			{
+				if (tp.flags.stop)
+				{
+					return;
+				}
+
+				LFLock lk(mtx);
+				if (!done)
+				{
+					if (!followup)
+					{
+						followup = ThreadPool::make_task(tp, std::forward<Func>(_func), std::forward<Args>(_args)...);
+						followup->set_parent(shared_from_this());
+					}
+					else
+					{
+						followup->chain(std::forward<Func>(_func), std::forward<Args>(_args)...);
+					}
+				}
+				else
+				{
+					tp.enqueue(std::forward<Func>(_func), std::forward<Args>(_args)...);
+				}
+			}
+
+		private:
+
+			virtual void set_parent(TaskPtr _parent) = 0;
+
+		};
+
+		using TaskPtr = TaskBase::TaskPtr;
+
+		template<typename Func, typename Ret, typename ... Args>
+		class TaskExecutor : public TaskBase
+		{
+		private:
+
+			using LFLock = Sync::LFLock;
+
+			std::function<Ret(Args&&...)> func;
+			std::tuple<Args&& ...> args;
+
+			Promise<Ret> promise;
+			up<Future<Ret>> future;
+
+		public:
+
+			TaskExecutor(ThreadPool& _tp, Func&& _func, Args&& ... _args)
+				:
+				  TaskBase(_tp),
+				  func(std::forward<Func>(_func)),
+				  args(std::forward<Args>(_args)...)
+			{}
+
+			virtual void run() override final
+			{
+				if constexpr (std::is_void<Ret>::value)
+				{
+					std::apply(func, args);
+					promise.set_value();
+				}
+				else
+				{
+					promise.set_value(std::apply(func, args));
+				}
+
+				/// Mark the task completed.
+				done.store(true);
+
+				if (followup)
+				{
+					followup->run();
+				}
+			}
+
+			~TaskExecutor()
+			{
+				if (!done)
+				{
+					promise.invalidate();
+				}
+			};
+
+		private:
+
+			static constexpr TaskExecutor<Func, Ret, Args...>& downcast(const TaskPtr& _task)
+			{
+				return static_cast<TaskExecutor<Func, Ret, Args...>&>(*_task);
+			}
+
+			virtual void set_parent(TaskPtr _parent) override final
+			{
+				future = std::make_unique<Future<Ret>>(downcast(_parent).promise.get_future());
+			}
+
+			friend class ThreadPool;
+		};
 
 	private:
 
-		/// Task queue
-		Storage::TaskQueue queue;
-
-		struct Flags
+		struct
 		{
-			toggle stop;
-			toggle prune;
-			toggle pause;
-			Flags()
-				:
-				  stop(false),
-				  prune(false),
-				  pause(false)
-			{}
+			flag stop{false};
+			flag prune{false};
+			flag pause{false};
 		} flags;
 
-		struct Semaphores
+		struct
 		{
-			/// Bell for signalling threads to start
-			/// processing the queues.
-			Semaphore work;
-
-			/// Bell for signalling that the threadpool
-			/// is waiting for all tasks to finish.
-			Semaphore sync;
-		} semaphores;
-
-		struct Stats
-		{
-			auint received;
-			auint enqueued;
-			auint assigned;
-			auint completed;
-			auint aborted;
-
-			Stats()
-				:
-				  received(0),
-				  enqueued(0),
-				  assigned(0),
-				  completed(0),
-				  aborted(0)
-			{}
+			auint received{0};
+			auint enqueued{0};
+			auint assigned{0};
+			auint completed{0};
+			auint aborted{0};
 		} stats;
 
-		struct Workers
+		struct
 		{
-			/// Thread bookkeeping
-			mutex busy_mtx;
-			hmap<thread_id, toggle> busy;
+			struct
+			{
+				auint current{0};
+				auint target{0};
+			} count;
 
-			auint count;
-			auint target_count;
-			Workers(const uint _target_count)
-				:
-				  count(0),
-				  target_count(_target_count)
-			{}
+			/// Thread and task bookkeeping
+			Storage::TSTable<thread_id, flag> busy;
 		} workers;
+
+		struct
+		{
+			/// Semaphore for signalling workers
+			/// to start processing the queue.
+			Storage::Semaphore work;
+
+			/// Semaphore for signalling that all tasks must
+			/// finish processing before continuing.
+			Storage::Semaphore sync;
+		} semaphores;
+
+		/// Task queue
+		Storage::TSQueue<TaskPtr> queue;
 
 	public:
 
 		ThreadPool(const uint _init_count = std::thread::hardware_concurrency())
 			:
-			  workers(_init_count),
 			  semaphores{},
 			  queue(semaphores.work)
 		{
@@ -344,7 +598,7 @@ namespace Async
 			sync();
 
 			/// Spin until all workers have exited.
-			while (workers.count);
+			while (workers.count.current);
 
 			LOG("\n==========[ Task statistics ]===========",
 			   "\nReceived:\t", stats.received,
@@ -364,44 +618,33 @@ namespace Async
 			}
 		}
 
-		template<typename F, typename ... Args>
-		auto enqueue(F&& _f, Args&&... _args) -> std::future<typename std::invoke_result<F, Args...>::type>
+		template<typename Func, typename ... Args>
+		TaskPtr enqueue(Func&& _func, Args&&... _args)
 		{
-			using Ret = typename std::invoke_result<F, Args...>::type;
 
 #ifdef TP_BENCH
 			auto start(clk::now());
 #endif
-
-			std::promise<Ret> promise;
-			std::future<Ret> future(promise.get_future());
-
 			if (flags.stop)
 			{
-				if constexpr (std::is_void<Ret>::value)
-				{
-					promise.set_value();
-				}
-				else
-				{
-					promise.set_value(Ret());
-				}
-				return future;
+				return nullptr;
 			}
+
+			TaskPtr task(make_task(*this, std::forward<Func>(_func), std::forward<Args>(_args)...));
+
+			queue.push(task);
 
 			++stats.received;
 			++stats.enqueued;
-
-			queue.emplace(std::forward<F>(_f), std::move(promise), std::forward<Args>(_args)...);
 
 #ifdef TP_BENCH
 			uint timespan(duration<nsec>(start));
 			enqueue_duration += timespan;
 			Debug::log("Enqueue took ", timespan, " ns");
 #endif
-			LOG("New task received (Received: ", stats.received, ", enqueued: ", stats.enqueued, ")")
+			LOG("New task received (Received: ", stats.received, ", enqueued: ", stats.enqueued, ")");
 
-			return future;
+			return task;
 		}
 
 		void resize(const uint _count)
@@ -411,9 +654,9 @@ namespace Async
 				return;
 			}
 
-			workers.target_count.store(_count);
-			flags.prune.store((workers.count > workers.target_count));
-			while (workers.count < workers.target_count)
+			workers.count.target.store(_count);
+			flags.prune.store((workers.count.current > workers.count.target));
+			while (workers.count.current < workers.count.target)
 			{
 				thread_id id(add_worker());
 				while(workers.busy[id]);
@@ -465,7 +708,7 @@ namespace Async
 
 		uint worker_count()
 		{
-			return workers.count;
+			return workers.count.current;
 		}
 
 		uint tasks_enqueued()
@@ -495,6 +738,13 @@ namespace Async
 
 	private:
 
+		template<typename Func, typename ... Args>
+		static TaskPtr make_task(ThreadPool& _tp, Func&& _func, Args&& ... _args)
+		{
+			using Ret = typename std::invoke_result<Func, Args...>::type;
+			return std::make_shared<TaskExecutor<Func, Ret, Args...>>(_tp, std::forward<Func>(_func), std::forward<Args>(_args)...);
+		}
+
 		thread_id add_worker()
 		{
 			std::promise<thread_id> ready_promise;
@@ -502,25 +752,23 @@ namespace Async
 
 			std::thread([&,rp = std::move(ready_promise)]() mutable
 			{
-				Storage::TaskPtr task(nullptr);
-
-				uint count(++workers.count);
-				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " ready");
-
-				{
-					glock lk(workers.busy_mtx);
-					workers.busy[std::this_thread::get_id()] = true;
-				}
-
+				/// Indicate that the worker is busy (initialising).
+				workers.busy[std::this_thread::get_id()].store(true);
 				auto& busy(workers.busy[std::this_thread::get_id()]);
+
+				/// Set this worker's thread ID in the busy flag table.
 				rp.set_value(std::this_thread::get_id());
 
-				busy.store(false);
+				TaskPtr task(nullptr);
 
+				uint count(++workers.count.current);
+				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " ready");
+
+				busy.store(false);
 				while (true)
 				{
 					/// Block execution until we have something to process.
-					semaphores.work.wait([&]
+					semaphores.work.wait([&]() -> bool
 					{
 						busy.store(queue.pop(task));
 						LOG("Thread ", std::this_thread::get_id(), " waiting for work.");
@@ -529,14 +777,14 @@ namespace Async
 
 					if (busy)
 					{
-						/// Update the stats
+						/// Update the stats.
 						++stats.assigned;
 						--stats.enqueued;
 
 						LOG(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)")
 
-						/// Execute the task
-						(*task)();
+						/// Run the task.
+						task->run();
 
 						busy.store(false);
 
@@ -559,13 +807,11 @@ namespace Async
 					}
 				}
 
-				{
-					glock lk(workers.busy_mtx);
-					workers.busy.erase(std::this_thread::get_id());
-				}
+				/// Remove the busy flag from the table.
+				workers.busy.erase(std::this_thread::get_id());
 
-				--workers.count;
-				flags.prune.store(workers.count > workers.target_count);
+				--workers.count.current;
+				flags.prune.store(workers.count.current > workers.count.target);
 
 				LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " exiting...")
 
@@ -573,6 +819,8 @@ namespace Async
 
 			return id.get();
 		}
+
+		friend class TaskBase;
 	};
 }
 #endif // THREADPOOL_HPP
