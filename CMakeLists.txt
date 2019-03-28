@@ -27,34 +27,34 @@ set(tp_bench ON CACHE BOOL "Enable benchmarking for the enqueue() operation.")
 set(bin_name "threadpool")
 
 if(${tp_debug})
-	add_definitions(-DTP_DEBUG)
+    add_definitions(-DTP_DEBUG)
 endif()
 
 if(${tp_bench})
-	add_definitions(-DTP_BENCH)
+    add_definitions(-DTP_BENCH)
 endif()
 
 if(${tp_throw})
-	add_definitions(-DTP_THROW)
+    add_definitions(-DTP_THROW)
 endif()
 
 set(
-	CMAKE_RUNTIME_OUTPUT_DIRECTORY
-	"${CMAKE_CURRENT_SOURCE_DIR}/bin"
-	CACHE
-	PATH
-	"Executable output directory"
+    CMAKE_RUNTIME_OUTPUT_DIRECTORY
+    "${CMAKE_CURRENT_SOURCE_DIR}/bin"
+    CACHE
+    PATH
+    "Executable output directory"
 )
 
 include_directories(
-	${CMAKE_CURRENT_SOURCE_DIR}/include
-	)
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
 
 set(
-	src_list
-	include/threadpool.hpp
-	src/example.cpp
-	)
+    src_list
+    include/threadpool.hpp
+    src/example.cpp
+    )
 
 add_executable(${bin_name} ${src_list})
 target_link_libraries(${bin_name} ${CMAKE_THREAD_LIBS_INIT})
