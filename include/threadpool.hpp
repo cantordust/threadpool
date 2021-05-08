@@ -16,11 +16,8 @@
 #include <chrono>
 #endif
 
-#ifdef TP_DEBUG
-#define LOG(...) Debug::log( __VA_ARGS__ );
-#else
-#define LOG(...)
-#endif
+#define TP_STATS
+//#define TP_LOG
 
 #ifdef TP_THROW
 #define TP_EXCEPT noexcept(false)
@@ -67,7 +64,7 @@ namespace Async
     using usec = std::chrono::microseconds;
     using msec = std::chrono::milliseconds;
     using clk = std::chrono::high_resolution_clock;
-#endif
+#endif /// TP_BENCH
 
     ///=====================================
     /// Smart pointers
@@ -107,7 +104,7 @@ namespace Async
         return std::chrono::duration_cast<T>(std::chrono::high_resolution_clock::now() - _start).count();
     }
 
-#endif
+#endif /// TP_BENCH
 
     namespace Sync
     {
@@ -118,34 +115,26 @@ namespace Async
         ///=====================================
         struct Semaphore
         {
-            flag spurious{true};
             mutex mtx;
             cvar cv;
 
-            void wait()
+            template<typename Func>
+            void wait(Func&& _check)
             {
-                spurious.store(true);
                 ulock lk(mtx);
-                cv.wait(lk, [&]{ return !spurious; });
-            }
-
-            template<typename T>
-            void wait(T&& _check)
-            {
-                spurious.store(true);
-                ulock lk(mtx);
-                cv.wait(lk, [&, check = std::forward<T>(_check)]{ return (!spurious || check()); });
+                cv.wait(lk, [&, check = std::forward<Func>(_check)]
+                {
+                    return (check());
+                });
             }
 
             void notify_one()
             {
-                spurious.store(false);
                 cv.notify_one();
             }
 
             void notify_all()
             {
-                spurious.store(false);
                 cv.notify_all();
             }
         };
@@ -176,51 +165,51 @@ namespace Async
         using Sync::LFLock;
         using Sync::Semaphore;
 
-        ///=====================================
-        /// Thread-safe hashmap.
-        ///=====================================
-        template<typename K, typename V>
-        class TSTable
-        {
-        protected:
+//        ///=====================================
+//        /// Thread-safe hashmap.
+//        ///=====================================
+//        template<typename K, typename V>
+//        class TSTable
+//        {
+//        protected:
 
-            LFMutex mtx = ATOMIC_FLAG_INIT;
-            hmap<K, V> table;
+//            LFMutex mtx = ATOMIC_FLAG_INIT;
+//            hmap<K, V> table;
 
-        public:
+//        public:
 
-            template<typename Key>
-            auto operator [](Key&& _key) -> decltype (auto)
-            {
-                LFLock lk(mtx);
-                return table[std::forward<Key>(_key)];
+//            template<typename Key>
+//            auto operator [](Key&& _key) -> decltype (auto)
+//            {
+//                LFLock lk(mtx);
+//                return table[std::forward<Key>(_key)];
 
-            }
-            template<typename Key>
-            auto erase(Key&& _key) -> decltype (auto)
-            {
-                LFLock lk(mtx);
-                return table.erase(std::forward<Key>(_key));
-            }
+//            }
+//            template<typename Key>
+//            auto erase(Key&& _key) -> decltype (auto)
+//            {
+//                LFLock lk(mtx);
+//                return table.erase(std::forward<Key>(_key));
+//            }
 
-            bool has(const K& _k) const
-            {
-                LFLock lk(mtx);
-                return table.find(_k) != table.end();
-            }
+//            bool has(const K& _k) const
+//            {
+//                LFLock lk(mtx);
+//                return table.find(_k) != table.end();
+//            }
 
-            bool is_empty() const
-            {
-                LFLock lk(mtx);
-                return table.empty();
-            }
+//            bool is_empty() const
+//            {
+//                LFLock lk(mtx);
+//                return table.empty();
+//            }
 
-            void clear()
-            {
-                LFLock lk(mtx);
-                table.clear();
-            }
-        };
+//            void clear()
+//            {
+//                LFLock lk(mtx);
+//                table.clear();
+//            }
+//        };
 
         ///=====================================
         /// Thread-safe queue.
@@ -247,35 +236,43 @@ namespace Async
 
             void push(const T& _t)
             {
-                LFLock lk(mtx);
-                queue.push_back(_t);
+                {
+                    LFLock lk(mtx);
+                    queue.push_back(_t);
+                }
                 s.notify_one();
             }
 
             void push(T&& _t)
             {
-                LFLock lk(mtx);
-                queue.emplace_back(std::move(_t));
+                {
+                    LFLock lk(mtx);
+                    queue.emplace_back(std::move(_t));
+                }
                 s.notify_one();
             }
 
             template<typename ... Args>
             void emplace(Args&& ... _args)
             {
-                LFLock lk(mtx);
-                queue.emplace_back(std::forward<Args>(_args)...);
+                {
+                    LFLock lk(mtx);
+                    queue.emplace_back(std::forward<Args>(_args)...);
+                }
                 s.notify_one();
             }
 
             bool pop(T& _t)
             {
-                LFLock lk(mtx);
-                if (queue.empty())
                 {
-                    return false;
+                    LFLock lk(mtx);
+                    if (queue.empty())
+                    {
+                        return false;
+                    }
+                    _t = std::move(queue.front());
+                    queue.pop_front();
                 }
-                _t = std::move(queue.front());
-                queue.pop_front();
                 return true;
             }
 
@@ -291,7 +288,6 @@ namespace Async
                 queue.clear();
             }
         };
-
     }
 
     ///=============================================================================
@@ -305,10 +301,10 @@ namespace Async
 
 #ifdef TP_BENCH
         uint enqueue_duration = 0;
-#endif
+#endif /// TP_BENCH
 
         /// Version string.
-        inline static const std::string version{"0.2.6.12"};
+        inline static const std::string version{"0.3.1"};
 
         template<typename T> class Future;
 
@@ -547,6 +543,7 @@ namespace Async
             flag pause{false};
         } flags;
 
+#ifdef TP_STATS
         struct
         {
             auint received{0};
@@ -555,6 +552,7 @@ namespace Async
             auint completed{0};
             auint aborted{0};
         } stats;
+#endif /// TP_STATS
 
         struct
         {
@@ -564,8 +562,8 @@ namespace Async
                 auint target{0};
             } count;
 
-            /// Thread and task bookkeeping
-            Storage::TSTable<thread_id, flag> busy;
+//            /// Thread and task bookkeeping
+//            Storage::TSTable<thread_id, flag> busy;
         } workers;
 
         struct
@@ -580,45 +578,54 @@ namespace Async
         } semaphores;
 
         /// Task queue
-        Storage::TSQueue<TaskPtr> queue;
+//        Storage::TSQueue<TaskPtr> queue;
+        std::deque<TaskPtr> queue;
 
     public:
 
         ThreadPool(const uint _init_count = std::thread::hardware_concurrency())
             :
-              semaphores{},
-              queue(semaphores.work)
+//              semaphores{},
+              queue(64)
         {
             resize(_init_count);
         }
 
         ~ThreadPool() TP_EXCEPT
         {
-            LOG("Destroying ThreadPool...");
+#ifdef TP_LOG
+            Debug::log("Destroying ThreadPool...");
+#endif /// TP_LOG
 
             /// Indicate that the threadpool has reached EOL.
             flags.stop.store(true);
             sync();
 
             /// Spin until all workers have exited.
-            while (workers.count.current);
+            while (workers.count.current > 0);
 
-            LOG("\n==========[ Task statistics ]===========",
+#ifdef TP_STATS
+#ifdef TP_LOG
+            Debug::log("\n==========[ Task statistics ]===========",
                "\nReceived:\t", stats.received,
                "\nEnqueued:\t", stats.enqueued,
                "\nAssigned:\t", stats.assigned,
                "\nCompleted:\t", stats.completed,
                "\nAborted:\t", stats.aborted,
-               "\n")
+               "\n");
+#endif /// TP_LOG
 
             if (stats.received != stats.assigned + stats.completed + stats.aborted)
             {
 #ifdef TP_THROW
                 throw std::out_of_range("\n!!! ERROR: !!! Some tasks have been lost along the way!\n");
-#else
-                LOG("\n!!! ERROR: !!! Some tasks have been lost along the way!\n")
-#endif
+#else /// TP_THROW
+#ifdef TP_LOG
+                Debug::log("\n!!! ERROR: !!! Some tasks have been lost along the way!\n");
+#endif /// TP_LOG
+#endif /// TP_THROW
             }
+#endif /// TP_STATS
         }
 
         template<typename Func, typename ... Args>
@@ -627,7 +634,7 @@ namespace Async
 
 #ifdef TP_BENCH
             auto start(clk::now());
-#endif
+#endif /// TP_BENCH
             if (flags.stop)
             {
                 return nullptr;
@@ -635,17 +642,27 @@ namespace Async
 
             TaskPtr task(make_task(*this, std::forward<Func>(_func), std::forward<Args>(_args)...));
 
-            queue.push(task);
-
-            ++stats.received;
-            ++stats.enqueued;
+            {
+                glock lk{semaphores.work.mtx};
+                queue.push_back(task);
+            }
 
 #ifdef TP_BENCH
             uint timespan(duration<nsec>(start));
             enqueue_duration += timespan;
             Debug::log("Enqueue took ", timespan, " ns");
-#endif
-            LOG("New task received (Received: ", stats.received, ", enqueued: ", stats.enqueued, ")");
+#endif /// TP_BENCH
+
+            semaphores.work.notify_one();
+
+#ifdef TP_STATS
+            ++stats.received;
+            ++stats.enqueued;
+#endif /// TP_STATS
+
+#ifdef TP_LOG
+            Debug::log("New task received (Received: ", stats.received, ", enqueued: ", stats.enqueued, ")");
+#endif /// TP_LOG
 
             return task;
         }
@@ -661,8 +678,8 @@ namespace Async
             flags.prune.store((workers.count.current > workers.count.target));
             while (workers.count.current < workers.count.target)
             {
-                thread_id id(add_worker());
-                while(workers.busy[id]);
+                add_worker();
+//                while(workers.busy[id]);
             }
         }
 
@@ -670,18 +687,27 @@ namespace Async
         {
             if (flags.stop)
             {
-                LOG("Threadpool already stopped.")
+#ifdef TP_LOG
+                Debug::log("Threadpool already stopped.");
+#endif /// TP_LOG
                 return;
             }
-
-            LOG("Stopping threadpool...")
-
-            flags.stop.store(true);
+#ifdef TP_LOG
+            Debug::log("Stopping threadpool...");
+#endif /// TP_LOG
 
             /// Empty the queue
+#ifdef TP_STATS
             stats.aborted += stats.enqueued;
             stats.enqueued.store(0);
-            queue.clear();
+#endif /// TP_STATS
+
+            {
+                glock lk{semaphores.work.mtx};
+                queue.clear();
+                flags.stop.store(true);
+                workers.count.target.store(0);
+            }
 
             semaphores.sync.notify_all();
         }
@@ -690,11 +716,13 @@ namespace Async
         {
             semaphores.work.notify_all();
 
-            LOG("Waiting for tasks to finish...")
+#ifdef TP_LOG
+            Debug::log("Waiting for tasks to finish...");
+#endif /// TP_LOG
 
             semaphores.sync.wait([&]
             {
-                return !stats.enqueued;
+                return (stats.enqueued == 0);
             });
         }
 
@@ -714,6 +742,7 @@ namespace Async
             return workers.count.current;
         }
 
+#ifdef TP_STATS
         uint tasks_enqueued()
         {
             return stats.enqueued;
@@ -738,6 +767,7 @@ namespace Async
         {
             return stats.aborted;
         }
+#endif /// TP_STATS
 
     private:
 
@@ -755,69 +785,82 @@ namespace Async
 
             std::thread([&,rp = std::move(ready_promise)]() mutable
             {
+                bool busy{false};
+
                 /// Indicate that the worker is busy (initialising).
-                workers.busy[std::this_thread::get_id()].store(true);
-                auto& busy(workers.busy[std::this_thread::get_id()]);
+//                workers.busy[std::this_thread::get_id()].store(true);
 
                 /// Set this worker's thread ID in the busy flag table.
+//                auto& busy(workers.busy[std::this_thread::get_id()]);
+
                 rp.set_value(std::this_thread::get_id());
 
                 TaskPtr task(nullptr);
 
                 uint count(++workers.count.current);
-                LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " ready");
+#ifdef TP_LOG
+                Debug::log("\tWorker ", count, " in thread ", std::this_thread::get_id(), " ready");
+#endif /// TP_LOG
 
-                busy.store(false);
-                while (true)
+//                busy.store(false);
+                do
                 {
                     /// Block execution until we have something to process.
                     semaphores.work.wait([&]() -> bool
                     {
-                        busy.store(queue.pop(task));
-                        LOG("Thread ", std::this_thread::get_id(), " waiting for work.");
-                        return (busy || flags.stop || flags.prune || !flags.pause);
+                        if (queue.empty() || flags.pause)
+                        {
+                            return false;
+                        }
+#ifdef TP_LOG
+                        Debug::log("Thread ", std::this_thread::get_id(), " waiting for work.");
+#endif /// TP_LOG
+                        task = std::move(queue.front());
+                        queue.pop_front();
+                        return true;
                     });
 
-                    if (busy)
+                    if (task)
                     {
 
+#ifdef TP_STATS
                         /// Update the stats.
                         ++stats.assigned;
                         --stats.enqueued;
+#endif /// TP_STATS
 
-                        LOG(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)")
+#ifdef TP_LOG
+                        Debug::log(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)");
+#endif /// TP_LOG
 
                         /// Run the task.
                         task->run();
 
-                        busy.store(false);
+                        task = nullptr;
 
+#ifdef TP_STATS
                         /// Update the stats
                         --stats.assigned;
                         ++stats.completed;
+#endif /// TP_STATS
 
-                        LOG(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)");
+#ifdef TP_LOG
+                        Debug::log(stats.assigned, " task(s) assigned (", stats.enqueued, " enqueued)");
+                        Debug::log("Signalling that all tasks have been processed...");
+#endif /// TP_LOG
 
-                        if (!stats.enqueued)
-                        {
-                            LOG("Signalling that all tasks have been processed...");
-                            semaphores.sync.notify_all();
-                        }
+                        semaphores.sync.notify_one();
                     }
-                    else if (flags.prune ||
-                             flags.stop)
-                    {
-                        break;
-                    }
-                }
+                } while (! (flags.stop || workers.count.current == workers.count.target));
 
                 /// Remove the busy flag from the table.
-                workers.busy.erase(std::this_thread::get_id());
+//                workers.busy.erase(std::this_thread::get_id());
 
                 --workers.count.current;
-                flags.prune.store(workers.count.current > workers.count.target);
 
-                LOG("\tWorker ", count, " in thread ", std::this_thread::get_id(), " exiting...")
+#ifdef TP_LOG
+                Debug::log("\tWorker ", count, " in thread ", std::this_thread::get_id(), " exiting...");
+#endif /// TP_LOG
 
             }).detach();
 

@@ -16,175 +16,189 @@ static std::uniform_real_distribution<double> d_pause(0.0, 1.0);
 
 uint rnd_sleep()
 {
-	static std::mutex mtx;
-	glock lk(mtx);
-	return d_sleep(rng);
+    static std::mutex mtx;
+    glock lk(mtx);
+    return d_sleep(rng);
 }
 
 void void_void()
 {
-	static auint call_count(0);
-	uint tl_count(++call_count);
-	LOG("\tvoid void_void() call # ", tl_count);
-	uint sleep(rnd_sleep());
-	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	LOG("\tvoid void_void() # ", tl_count, " exiting...");
+    static auint call_count(0);
+    uint tl_count(++call_count);
+#ifdef TP_LOG
+    Debug::log("\tvoid void_void() call # ", tl_count);
+#endif /// TP_LOG
+    uint sleep(rnd_sleep());
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+#ifdef TP_LOG
+    Debug::log("\tvoid void_void() # ", tl_count, " exiting...");
+#endif /// TP_LOG
 }
 
 uint uint_void()
 {
-	static auint call_count(0);
-	uint tl_count(++call_count);
-	LOG("\tuint uint_void() call # ", tl_count);
-	uint sleep(rnd_sleep());
-	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	LOG("\tuint uint_void() # ", tl_count, "  exiting...");
-	return sleep;
+    static auint call_count(0);
+    uint tl_count(++call_count);
+#ifdef TP_LOG
+    Debug::log("\tuint uint_void() call # ", tl_count);
+#endif /// TP_LOG
+    uint sleep(rnd_sleep());
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+#ifdef TP_LOG
+    Debug::log("\tuint uint_void() # ", tl_count, "  exiting...");
+#endif /// TP_LOG
+    return sleep;
 }
 
 std::string string_void()
 {
-	static auint call_count(0);
-	uint tl_count(++call_count);
-	LOG("\tstd::string string_void() call # ", tl_count);
-	uint sleep(rnd_sleep());
-	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	LOG("\tstd::string string_void() # ", tl_count, "  exiting...");
-	return std::to_string(sleep);
+    static auint call_count(0);
+    uint tl_count(++call_count);
+#ifdef TP_LOG
+    Debug::log("\tstd::string string_void() call # ", tl_count);
+#endif /// TP_LOG
+    uint sleep(rnd_sleep());
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+#ifdef TP_LOG
+    Debug::log("\tstd::string string_void() # ", tl_count, "  exiting...");
+#endif /// TP_LOG
+    return std::to_string(sleep);
 }
 
 void void_uint(auint& _reference)
 {
-	static auint call_count(0);
-	uint tl_count(++call_count);
-	LOG("\tvoid void_uint(uint&) call # ", tl_count);
-	LOG("\tvoid void_uint(uint&) reference is ", ++_refererence);
-	uint sleep(rnd_sleep());
-	std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
-	LOG("\tvoid void_uint(const uint _num) # ", tl_count, " exiting...");
+    static auint call_count(0);
+    uint tl_count(++call_count);
+#ifdef TP_LOG
+    Debug::log("\tvoid void_uint(uint&) call # ", tl_count);
+    Debug::log("\tvoid void_uint(uint&) reference is ", ++_reference);
+#endif /// TP_LOG
+    uint sleep(rnd_sleep());
+    std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+#ifdef TP_LOG
+    Debug::log("\tvoid void_uint(const uint _num) # ", tl_count, " exiting...");
+#endif /// TP_LOG
 }
 
 template<typename T>
 void print(T&& _t)
 {
-	LOG("\tValue is ready: ", _t);
+    Debug::log("\tValue is ready: ", _t);
 }
 
 void schedule(ThreadPool& _tp, const uint _tasks, auint& _reference)
 {
-	for (uint t = 1; t <= _tasks; ++t)
-	{
-		switch (d_function(rng) % 4)
-		{
-		case 0:
-			{
-				_tp.enqueue(&void_void);
-				break;
-			}
+    for (uint t = 1; t <= _tasks; ++t)
+    {
+        switch (d_function(rng) % 4)
+        {
+        case 0:
+            {
+                _tp.enqueue(&void_void);
+                break;
+            }
 
-		case 1:
-			{
-				_tp.enqueue(&uint_void);
-				break;
-			}
+        case 1:
+            {
+                _tp.enqueue(&uint_void);
+                break;
+            }
 
-		case 2:
-			{
-				_tp.enqueue(&string_void);
-				break;
-			}
+        case 2:
+            {
+                _tp.enqueue(&string_void);
+                break;
+            }
 
-		case 3:
-			{
-				_tp.enqueue(&void_uint, _reference);
-				break;
-			}
-		}
-	}
+        case 3:
+            {
+                _tp.enqueue(&void_uint, _reference);
+                break;
+            }
+        }
+    }
 }
 
 int main(void)
 {
-	rng.seed(static_cast<uint>(std::chrono::high_resolution_clock().now().time_since_epoch().count()));
+    rng.seed(static_cast<uint>(std::chrono::high_resolution_clock().now().time_since_epoch().count()));
 
-	using Debug::log;
-
-	uint tasks(d_tasks(rng));
-	uint iterations(10);
-	uint runs(10);
+    uint tasks(d_tasks(rng));
+    uint iterations(10);
+    uint runs(10);
 
 #ifdef TP_BENCH
-	double enqueue_duration(0.0);
-	double total_tasks(0.0);
-#endif
+    double enqueue_duration(0.0);
+    double total_tasks(0.0);
+#endif /// TP_BENCH
 
-	for (uint it = 1; it <= iterations; ++it)
-	{
-		log("\n===============[ Iteration ", it, "/", iterations, " ]===============\n");
+    for (uint it = 1; it <= iterations; ++it)
+    {
+        Debug::log("\n===============[ Iteration ", it, "/", iterations, " ]===============\n");
 
-		uint workers(std::thread::hardware_concurrency());
+        uint workers(std::thread::hardware_concurrency());
 
-		auint reference(0);
+        auint reference(0);
 
-		ThreadPool tp(workers);
+        ThreadPool tp(workers);
 
-		for (uint run = 0; run < runs; ++run)
-		{
-			log("(main) Scheduling ", tasks, " task(s).");
-			schedule(tp, (tasks = d_tasks(rng)), reference);
+        for (uint run = 0; run < runs; ++run)
+        {
+            Debug::log("(main) Scheduling ", tasks, " task(s).");
+            schedule(tp, (tasks = d_tasks(rng)), reference);
 
-			/// Synchronise
-			tp.sync();
-			log("(main) Tasks completed.");
+            /// Synchronise
+            tp.sync();
+            Debug::log("(main) Tasks completed.");
 
-			workers = d_workers(rng);
+            workers = d_workers(rng);
 
-			log("(main) Resizing pool to ", workers, " worker(s).");
-			tp.resize(workers);
+            Debug::log("(main) Resizing pool to ", workers, " worker(s).");
+            tp.resize(workers);
 
-			log("(main) Scheduling ", tasks, " task(s).");
-			schedule(tp, (tasks = d_tasks(rng)), reference);
+            Debug::log("(main) Scheduling ", tasks, " task(s).");
+            schedule(tp, (tasks = d_tasks(rng)), reference);
 
-			if (d_stop(rng) < 0.1)
-			{
-				tp.stop();
-				log("(main) Threadpool stopped.");
-			}
+            if (d_stop(rng) < 0.1)
+            {
+                tp.stop();
+                Debug::log("(main) Threadpool stopped.");
+            }
 
-			if (d_pause(rng) < 0.33)
-			{
-				log("(main) Pausing threadpool...");
-				tp.pause();
-				uint sleep(3 * d_sleep(rng));
+            if (d_pause(rng) < 0.33)
+            {
+                Debug::log("(main) Pausing threadpool...");
+                tp.pause();
+                uint sleep(3 * d_sleep(rng));
 
-				log("(main) Main sleeping for ", sleep, " milliseconds.");
-				std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
+                Debug::log("(main) Main sleeping for ", sleep, " milliseconds.");
+                std::this_thread::sleep_for(std::chrono::milliseconds(sleep));
 
-				log("(main) Resuming threadpool...");
-				tp.resume();
-			}
+                Debug::log("(main) Resuming threadpool...");
+                tp.resume();
+            }
 
-			/// Synchronise
-			tp.sync();
-			log("(main) Tasks completed.");
-		}
+            /// Synchronise
+            tp.sync();
+            Debug::log("(main) Tasks completed.");
+        }
 
-		log("(main) Destroying ThreadPool...");
-
-#ifdef TP_BENCH
-		enqueue_duration += tp.enqueue_duration;
-		total_tasks += tp.tasks_received();
-#endif
-
-	}
-
-	log("\n===============[ The End ]===============\n");
+        Debug::log("(main) Destroying ThreadPool...");
 
 #ifdef TP_BENCH
-		log("(main) Average enqueue time: ", enqueue_duration / total_tasks, " ns");
-#endif
+        enqueue_duration += tp.enqueue_duration;
+        total_tasks += tp.tasks_received();
+#endif /// TP_BENCH
 
-	log("(main) ", iterations, " iteration(s) completed successfully! Exiting main.");
+    }
 
-	return 0;
+    Debug::log("\n===============[ The End ]===============\n");
+
+#ifdef TP_BENCH
+        Debug::log("(main) Average enqueue time: ", enqueue_duration / total_tasks, " ns");
+#endif /// TP_BENCH
+
+    Debug::log("(main) ", iterations, " iteration(s) completed successfully! Exiting main.");
+
+    return 0;
 }

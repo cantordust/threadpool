@@ -20,14 +20,15 @@ find_package(Threads REQUIRED)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
 set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-set(tp_debug OFF CACHE BOOL "Enable debug output.")
+set(tp_log ON CACHE BOOL "Enable verbose output.")
 set(tp_throw OFF CACHE BOOL "Allow the threadpool to throw exceptions.")
 set(tp_bench ON CACHE BOOL "Enable benchmarking for the enqueue() operation.")
 set(bin_name "threadpool")
 
-if(${tp_debug})
-    add_definitions(-DTP_DEBUG)
+if(${tp_log})
+    add_definitions(-DTP_LOG)
 endif()
 
 if(${tp_bench})
