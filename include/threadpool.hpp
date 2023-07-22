@@ -34,15 +34,10 @@ namespace Async
     using auint = std::atomic<uint>;
     using flag = std::atomic<bool>;
     using lguard = std::lock_guard<std::mutex>;
-    using tid = std::thread::id;
-    template<class K, class V>
-    using hmap = std::unordered_map<K, V>;
-    template<class K>
-    using hset = std::unordered_set<K>;
-    template<class T>
-    using sptr = std::shared_ptr<T>;
     template<class T>
     using uptr = std::unique_ptr<T>;
+
+
 
     struct TaskBase
     {
@@ -103,10 +98,12 @@ namespace Async
         // Flag for signalling threads that they should quit.
         flag halt{ false };
 
-        // Worker counter
-        auint workers{ 0 };
-
+        // A container for all the worker threads.
         std::vector<std::jthread> threads;
+
+        // Worker counter.
+        // Plays a role in the destructor.
+        auint workers{ 0 };
 
     public:
 
@@ -125,9 +122,7 @@ namespace Async
         {
             halt.store(true);
 
-            // semaphore.notify_all();
-
-            log("Waiting for tasks to finish...");
+            log("Waiting for all workers to finish processing the remaining tasks...");
 
             while (workers.load() > 0);
         }
@@ -140,16 +135,16 @@ namespace Async
 
 
 #ifdef TP_BENCH
-            auto start(std::chrono::steady_clock::now());
+            auto start(std::chrono::high_resolution_clock::now());
 #endif
             {
                 const lguard lg{ mtx };
                 buffer.emplace_back(make_task(std::forward<F>(fun), std::forward<Args>(args)...));
-                //                log("Enqueue | buffer size ", buffer.size());
+//                log("Enqueue | buffer size ", buffer.size());
             }
 
 #ifdef TP_BENCH
-            uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+            uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
             enqueue_duration += ns;
             ++calls;
             // log("Enqueue took ", ns, " ns");
@@ -165,14 +160,16 @@ namespace Async
                 return;
             }
 
-            log("Stopping threadpool...");
+            log("Threadpool stopping...");
 
             {
 
                 lguard lg{ mtx };
 
+                // Inform the workers that they should stop.
                 halt.store(true);
-                /// Empty the queue
+
+                // Empty the queue
                 buffer.clear();
             }
         }
@@ -200,23 +197,23 @@ namespace Async
                     {
 
 #ifdef TP_BENCH
-                        auto start(std::chrono::steady_clock::now());
+                        auto start(std::chrono::high_resolution_clock::now());
 #endif
                         {
                             const lguard lg(mtx);
-                            //                            log("Swapping | _buffer size: ", _buffer.size(), " | buffer size: ", buffer.size());
+//                            log("Swapping | _buffer size: ", _buffer.size(), " | buffer size: ", buffer.size());
                             _buffer.swap(buffer);
                         }
 
 #ifdef TP_BENCH
-                        uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - start).count());
+                        uint ns(std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - start).count());
                         swap_duration += ns;
                         ++swaps;
 #endif
 
                         for (uint i = 0; i < _buffer.size(); ++i)
                         {
-                            /// Execute the task
+                            // Execute the task
                             (*_buffer[i])();
                         }
                         _buffer.clear();
