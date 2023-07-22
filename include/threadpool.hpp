@@ -9,12 +9,13 @@
 #include <iostream>
 #include <syncstream>
 
-std::mutex out_mtx;
 
 /// Rudimentary debug printing.
 template<typename ... Args>
 void log(Args&& ... _args)
 {
+    static std::mutex out_mtx;
+
     std::lock_guard lk{ out_mtx };
     std::array<int, sizeof...(_args)> status{ (std::cout << std::forward<Args>(_args), 0) ... };
     std::cout << '\n';
@@ -28,8 +29,6 @@ namespace Async
     using lguard = std::lock_guard<std::mutex>;
     template<class T>
     using uptr = std::unique_ptr<T>;
-
-
 
     struct TaskBase
     {
