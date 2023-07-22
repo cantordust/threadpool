@@ -1,21 +1,13 @@
 #ifndef THREADPOOL_HPP
 #define THREADPOOL_HPP
 
-// #include <deque>
-// #include <condition_variable>
-#include <array>
 #include <vector>
-#include <future>
 #include <thread>
 #include <mutex>
 #include <atomic>
 #include <functional>
 #include <iostream>
 #include <syncstream>
-#include <type_traits>
-#include <typeinfo>
-#include <unordered_set>
-#include <unordered_map>
 
 std::mutex out_mtx;
 
